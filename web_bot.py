@@ -4,6 +4,7 @@ from binance.exceptions import BinanceAPIException
 from dotenv import load_dotenv
 import config  # Import trading configuration
 import os, time, threading, subprocess
+from ml_predictor import PriceTrendPredictor
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -2199,6 +2200,9 @@ def trading_loop():
     print("📊 Market regime detection online")
     print("⚡ Breakout opportunity scanning active")
     print("📡 Signal scanning activated")
+
+    # Initialize ML predictor
+    predictor = PriceTrendPredictor()
     
     # Initialize trading summary if not exists
     if 'trading_summary' not in bot_status:
@@ -2357,29 +2361,40 @@ def trading_loop():
                 for i, opportunity in enumerate(opportunities[:max_targets]):
                     current_symbol = opportunity['symbol']
                     current_score = opportunity.get('score', 0)
-                    
                     print(f"\n🎯 === TARGET {i+1}: {current_symbol} ===")
                     print(f"💪 Score: {current_score:.1f}")
-                    
+
                     # Get fresh data for analysis
                     interval = "1m" if bot_status.get('hunting_mode') else "5m"
                     df = fetch_data(symbol=current_symbol, interval=interval, limit=100)
-                    
                     if df is None:
                         continue
-                        
+
+                    # ML price trend prediction
+                    feature_cols = [col for col in ['close', 'rsi', 'macd', 'macd_signal', 'macd_histogram', 'volume', 'sma5', 'sma20'] if col in df.columns]
+                    ml_trend = None
+                    if len(df) > 20 and len(feature_cols) >= 3:
+                        try:
+                            pred = predictor.predict(df.tail(1), feature_cols)
+                            if pred is not None:
+                                ml_trend = pred[0]
+                        except Exception as e:
+                            print(f"ML prediction error: {e}")
+
                     # Enhanced signal generation with market regime consideration
                     signal = signal_generator(df, current_symbol)
                     current_price = float(df['close'].iloc[-1])
-                    
+
                     print(f"🚦 Signal: {signal}")
                     print(f"💰 Price: ${current_price:.4f}")
-                    
+                    if ml_trend is not None:
+                        print(f"🤖 ML Trend Prediction: {ml_trend}")
+
                     if 'rsi' in opportunity:
                         print(f"📈 RSI: {opportunity['rsi']:.1f}")
                     if 'signals' in opportunity:
                         print(f"⚡ Triggers: {', '.join(opportunity['signals'])}")
-                    
+
                     # Update pair tracking
                     if current_symbol not in bot_status['monitored_pairs']:
                         bot_status['monitored_pairs'][current_symbol] = {
@@ -2392,16 +2407,17 @@ def trading_loop():
                             'successful_trades': 0,
                             'last_trade_time': None
                         }
-                    
+
                     bot_status['monitored_pairs'][current_symbol].update({
                         'last_signal': signal,
                         'last_price': current_price,
                         'rsi': float(df['rsi'].iloc[-1]),
                         'macd': {'trend': df['macd_trend'].iloc[-1]},
                         'last_update': format_cairo_time(),
-                        'opportunity_score': current_score
+                        'opportunity_score': current_score,
+                        'ml_trend': ml_trend
                     })
-                    
+
                     # Update main status with best target
                     if i == 0:
                         bot_status.update({
@@ -2411,9 +2427,10 @@ def trading_loop():
                             'last_update': format_cairo_time(),
                             'rsi': float(df['rsi'].iloc[-1]),
                             'macd': {'trend': df['macd_trend'].iloc[-1]},
-                            'opportunity_score': current_score
+                            'opportunity_score': current_score,
+                            'ml_trend': ml_trend
                         })
-                    
+
                     # Execute trade with enhanced conditions
                     if signal in ["BUY", "SELL"]:
                         # Initialize risk tracking if not present
@@ -2421,39 +2438,50 @@ def trading_loop():
                             bot_status['consecutive_losses'] = 0
                         if 'daily_loss' not in bot_status:
                             bot_status['daily_loss'] = 0.0
-                        
+
                         # Risk management checks with debug logging
                         consecutive_losses = bot_status.get('consecutive_losses', 0)
                         daily_loss = bot_status.get('daily_loss', 0.0)
-                        
+
                         print(f"🔍 Risk Management Check:")
                         print(f"   Consecutive losses: {consecutive_losses}/{config.MAX_CONSECUTIVE_LOSSES}")
                         print(f"   Daily loss: ${daily_loss:.2f}/${config.MAX_DAILY_LOSS}")
                         print(f"   API Connected: {bot_status.get('api_connected', False)}")
                         print(f"   Can Trade (Account): {bot_status.get('can_trade', False)}")
-                        
+
                         can_trade = (
                             consecutive_losses < config.MAX_CONSECUTIVE_LOSSES and
                             daily_loss < config.MAX_DAILY_LOSS and
                             bot_status.get('api_connected', False) and
                             bot_status.get('can_trade', False)
                         )
-                        
+
                         # Additional hunting mode conditions
                         if bot_status.get('hunting_mode'):
                             can_trade = can_trade and current_score >= 50  # Higher threshold in hunting mode
                             print(f"   Hunting mode score: {current_score}/50")
-                        
+
+                        # ML trend filter: only trade if ML model predicts uptrend for BUY or downtrend for SELL
+                        ml_trade_ok = True
+                        if ml_trend is not None:
+                            if signal == "BUY" and ml_trend != 1:
+                                ml_trade_ok = False
+                            if signal == "SELL" and ml_trend != -1:
+                                ml_trade_ok = False
+                        if not ml_trade_ok:
+                            print(f"🛑 Trade blocked by ML trend filter: ML trend={ml_trend}, signal={signal}")
+                            continue
+
                         if can_trade:
                             print(f"🚀 EXECUTING {signal} for {current_symbol}")
                             result = execute_trade(signal, current_symbol)
                             print(f"📊 Result: {result}")
-                            
+
                             # Update tracking
                             bot_status['monitored_pairs'][current_symbol]['total_trades'] += 1
                             if "executed" in str(result).lower():
                                 bot_status['monitored_pairs'][current_symbol]['successful_trades'] += 1
-                            
+
                             # In hunting mode, only take the best trade
                             if bot_status.get('hunting_mode'):
                                 break
