@@ -1050,6 +1050,110 @@ def fetch_data(symbol="BTCUSDT", interval="1h", limit=100):
         df['volume_sma'] = df['volume'].rolling(20).mean()
         df['volume_trend'] = df['volume'] / df['volume_sma']
         
+        # Calculate EMA (Exponential Moving Averages)
+        df['ema12'] = df['close'].ewm(span=12).mean()
+        df['ema26'] = df['close'].ewm(span=26).mean()
+        df['ema50'] = df['close'].ewm(span=50).mean()
+        df['ema200'] = df['close'].ewm(span=200).mean()
+        
+        # Calculate Stochastic Oscillator (%K, %D)
+        try:
+            # %K calculation
+            lowest_low = df['low'].rolling(window=14).min()
+            highest_high = df['high'].rolling(window=14).max()
+            df['stoch_k'] = 100 * ((df['close'] - lowest_low) / (highest_high - lowest_low))
+            
+            # %D calculation (3-period SMA of %K)
+            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+            
+            # Fill NaN values with neutral values
+            df['stoch_k'] = df['stoch_k'].fillna(50)
+            df['stoch_d'] = df['stoch_d'].fillna(50)
+        except Exception as stoch_error:
+            log_error_to_csv(f"Stochastic calculation failed for {symbol}: {stoch_error}", 
+                           "STOCH_ERROR", "fetch_data", "WARNING")
+            df['stoch_k'] = 50
+            df['stoch_d'] = 50
+        
+        # Calculate VWAP (Volume Weighted Average Price)
+        try:
+            # Typical Price = (High + Low + Close) / 3
+            df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+            
+            # VWAP = Sum(Typical Price * Volume) / Sum(Volume)
+            df['price_volume'] = df['typical_price'] * df['volume']
+            df['cumulative_pv'] = df['price_volume'].cumsum()
+            df['cumulative_volume'] = df['volume'].cumsum()
+            df['vwap'] = df['cumulative_pv'] / df['cumulative_volume']
+            
+            # For intraday VWAP, reset at start of each day
+            # Using rolling window VWAP for better signals
+            window = 20  # 20-period rolling VWAP
+            df['vwap_rolling'] = (df['price_volume'].rolling(window).sum() / 
+                                df['volume'].rolling(window).sum())
+            
+            # Fill NaN values
+            df['vwap'] = df['vwap'].fillna(df['close'])
+            df['vwap_rolling'] = df['vwap_rolling'].fillna(df['close'])
+            
+        except Exception as vwap_error:
+            log_error_to_csv(f"VWAP calculation failed for {symbol}: {vwap_error}", 
+                           "VWAP_ERROR", "fetch_data", "WARNING")
+            df['vwap'] = df['close']
+            df['vwap_rolling'] = df['close']
+        
+        # Calculate ADX (Average Directional Index)
+        try:
+            # True Range calculation (already have ATR components)
+            tr1 = df['high'] - df['low']
+            tr2 = abs(df['high'] - df['close'].shift())
+            tr3 = abs(df['low'] - df['close'].shift())
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            # Directional Movement calculation
+            plus_dm = df['high'].diff()
+            minus_dm = df['low'].diff() * -1
+            
+            # Only keep positive directional movements
+            plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+            minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+            
+            # Calculate 14-period smoothed averages using Wilder's smoothing
+            period = 14
+            alpha = 1.0 / period
+            
+            # Smoothed True Range
+            atr_smooth = true_range.ewm(alpha=alpha, adjust=False).mean()
+            
+            # Smoothed Directional Movements
+            plus_dm_smooth = plus_dm.ewm(alpha=alpha, adjust=False).mean()
+            minus_dm_smooth = minus_dm.ewm(alpha=alpha, adjust=False).mean()
+            
+            # Directional Indicators
+            plus_di = 100 * (plus_dm_smooth / atr_smooth)
+            minus_di = 100 * (minus_dm_smooth / atr_smooth)
+            
+            # Directional Index
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+            dx = dx.fillna(0)  # Handle division by zero
+            
+            # ADX (smoothed DX)
+            df['adx'] = dx.ewm(alpha=alpha, adjust=False).mean()
+            df['plus_di'] = plus_di
+            df['minus_di'] = minus_di
+            
+            # Fill NaN values with neutral values
+            df['adx'] = df['adx'].fillna(25)
+            df['plus_di'] = df['plus_di'].fillna(25)
+            df['minus_di'] = df['minus_di'].fillna(25)
+            
+        except Exception as adx_error:
+            log_error_to_csv(f"ADX calculation failed for {symbol}: {adx_error}", 
+                           "ADX_ERROR", "fetch_data", "WARNING")
+            df['adx'] = 25  # Neutral trend strength
+            df['plus_di'] = 25
+            df['minus_di'] = 25
+        
         return df
         
     except Exception as e:
@@ -1464,31 +1568,53 @@ def strict_strategy(df, symbol, indicators):
     volatility = indicators['volatility']
     current_price = indicators['current_price']
     
+    # Extract new indicators
+    ema12 = indicators.get('ema12', current_price)
+    ema26 = indicators.get('ema26', current_price)
+    ema50 = indicators.get('ema50', current_price)
+    stoch_k = indicators.get('stoch_k', 50)
+    stoch_d = indicators.get('stoch_d', 50)
+    vwap = indicators.get('vwap_rolling', current_price)
+    adx = indicators.get('adx', 25)
+    plus_di = indicators.get('plus_di', 25)
+    minus_di = indicators.get('minus_di', 25)
+    
     # Get strict strategy thresholds from config
     strict_config = config.STRICT_STRATEGY
     
-    # Strict buy conditions with configurable thresholds
+    # Strict buy conditions with all indicators
     buy_conditions = [
         rsi < config.RSI_OVERSOLD,  # Strong oversold
         macd_trend == "BULLISH",
-        sma5 > sma20,  # Clear uptrend
+        sma5 > sma20,  # SMA trend
+        ema12 > ema26 > ema50,  # Strong EMA alignment
+        current_price > vwap,  # Price above VWAP
+        stoch_k < 20 and stoch_d < 20,  # Oversold stochastic
+        adx > 25,  # Strong trend
+        plus_di > minus_di,  # Positive directional movement
         sentiment == "bullish",
-        volatility < strict_config['volatility_max']  # Configurable volatility threshold
+        volatility < strict_config['volatility_max']
     ]
     
     # Strict sell conditions
     sell_conditions = [
-        rsi > 70,  # Strong overbought
+        rsi > 70,  # Overbought
         macd_trend == "BEARISH",
-        sma5 < sma20,  # Clear downtrend
+        sma5 < sma20,  # SMA trend down
+        ema12 < ema26 < ema50,  # Strong EMA downtrend
+        current_price < vwap,  # Price below VWAP
+        stoch_k > 80 and stoch_d > 80,  # Overbought stochastic
+        adx > 25,  # Strong trend
+        minus_di > plus_di,  # Negative directional movement
         sentiment == "bearish",
-        volatility < 0.3  # Low volatility
+        volatility < 0.3
     ]
     
+    # Require ALL conditions for strict strategy
     if all(buy_conditions):
-        return "BUY", "Strong buy signal with multiple confirmations"
+        return "BUY", "Strong buy signal with all indicator confirmations"
     elif all(sell_conditions):
-        return "SELL", "Strong sell signal with multiple confirmations"
+        return "SELL", "Strong sell signal with all indicator confirmations"
     
     return "HOLD", "Waiting for stronger signals"
 
@@ -1508,31 +1634,50 @@ def moderate_strategy(df, symbol, indicators):
     sentiment = indicators['sentiment']
     sma5 = indicators['sma5']
     sma20 = indicators['sma20']
+    current_price = indicators['current_price']
+    
+    # Extract new indicators
+    ema12 = indicators.get('ema12', current_price)
+    ema26 = indicators.get('ema26', current_price)
+    stoch_k = indicators.get('stoch_k', 50)
+    stoch_d = indicators.get('stoch_d', 50)
+    vwap = indicators.get('vwap_rolling', current_price)
+    adx = indicators.get('adx', 25)
+    plus_di = indicators.get('plus_di', 25)
+    minus_di = indicators.get('minus_di', 25)
     
     # Get moderate strategy config
     moderate_config = config.MODERATE_STRATEGY
     min_signals = moderate_config['min_signals']
     
-    # Buy signals with configurable thresholds
+    # Buy signals with configurable thresholds and new indicators
     buy_signals = 0
     if rsi < config.RSI_OVERSOLD + 10: buy_signals += 1  # Less strict RSI
     if macd_trend == "BULLISH": buy_signals += 2
     if sma5 > sma20 and abs(sma5 - sma20)/sma20 > moderate_config['trend_strength']: buy_signals += 1
+    if ema12 > ema26: buy_signals += 1  # EMA crossover
+    if current_price > vwap: buy_signals += 1  # Price above VWAP
+    if stoch_k < 30: buy_signals += 1  # Stochastic oversold (moderate)
+    if adx > 20 and plus_di > minus_di: buy_signals += 1  # Moderate trend with positive direction
     if sentiment == "bullish": buy_signals += 1
     
-    # Sell signals (less strict)
+    # Sell signals (less strict) with new indicators
     sell_signals = 0
     if rsi > 60: sell_signals += 1  # Less strict RSI
     if macd_trend == "BEARISH": sell_signals += 2
     if sma5 < sma20: sell_signals += 1
+    if ema12 < ema26: sell_signals += 1  # EMA crossover down
+    if current_price < vwap: sell_signals += 1  # Price below VWAP
+    if stoch_k > 70: sell_signals += 1  # Stochastic overbought (moderate)
+    if adx > 20 and minus_di > plus_di: sell_signals += 1  # Moderate trend with negative direction
     if sentiment == "bearish": sell_signals += 1
     
-    if buy_signals >= 3:
+    if buy_signals >= min_signals:
         return "BUY", f"Moderate buy signal ({buy_signals} confirmations)"
-    elif sell_signals >= 3:
+    elif sell_signals >= min_signals:
         return "SELL", f"Moderate sell signal ({sell_signals} confirmations)"
     
-    return "HOLD", "Insufficient signals for trade"
+    return "HOLD", f"Insufficient signals (buy: {buy_signals}, sell: {sell_signals})"
 
 def adaptive_strategy(df, symbol, indicators):
     """
@@ -1553,6 +1698,17 @@ def adaptive_strategy(df, symbol, indicators):
     sma5 = indicators['sma5']
     sma20 = indicators['sma20']
     
+    # Extract new indicators
+    ema12 = indicators.get('ema12', current_price)
+    ema26 = indicators.get('ema26', current_price)
+    ema50 = indicators.get('ema50', current_price)
+    stoch_k = indicators.get('stoch_k', 50)
+    stoch_d = indicators.get('stoch_d', 50)
+    vwap = indicators.get('vwap_rolling', current_price)
+    adx = indicators.get('adx', 25)
+    plus_di = indicators.get('plus_di', 25)
+    minus_di = indicators.get('minus_di', 25)
+    
     # Get adaptive strategy settings
     adaptive_config = config.ADAPTIVE_STRATEGY
     
@@ -1565,27 +1721,55 @@ def adaptive_strategy(df, symbol, indicators):
     if is_high_volatility:
         rsi_buy = 35  # More conservative in high volatility
         rsi_sell = 65
+        stoch_buy = 25
+        stoch_sell = 75
     else:
         rsi_buy = 40  # More aggressive in low volatility
         rsi_sell = 60
+        stoch_buy = 30
+        stoch_sell = 70
         
     # Score-based system (0-100)
     score = 50  # Start neutral
     
-    # Adjust score based on indicators
+    # RSI scoring (adaptive thresholds)
     if rsi < rsi_buy: score += 20
     elif rsi > rsi_sell: score -= 20
     
+    # MACD scoring
     if macd_trend == "BULLISH": score += 15
     elif macd_trend == "BEARISH": score -= 15
     
+    # EMA scoring (multiple timeframes)
+    if ema12 > ema26: score += 10
+    else: score -= 10
+    if ema26 > ema50: score += 5
+    else: score -= 5
+    
+    # VWAP scoring
+    if current_price > vwap: score += 8
+    else: score -= 8
+    
+    # Stochastic scoring (adaptive thresholds)
+    if stoch_k < stoch_buy and stoch_d < stoch_buy: score += 12
+    elif stoch_k > stoch_sell and stoch_d > stoch_sell: score -= 12
+    
+    # ADX and directional movement scoring
+    if adx > 25:  # Strong trend
+        if plus_di > minus_di: score += 10
+        else: score -= 10
+    elif adx < 20:  # Weak trend - reduce all signals
+        score = score * 0.7
+    
+    # Sentiment scoring
     if sentiment == "bullish": score += 10
     elif sentiment == "bearish": score -= 10
     
+    # SMA trend scoring
     if sma5 > sma20: score += 5
     else: score -= 5
     
-    # Adjust score based on market regime
+    # Market regime adjustments
     if is_high_volatility:
         score = score * 0.8  # Reduce conviction in high volatility
     if is_strong_trend:
@@ -1704,7 +1888,23 @@ def signal_generator(df, symbol="BTCUSDT"):
         'sma5': sma5,
         'sma20': sma20,
         'current_price': current_price,
-        'volatility': volatility
+        'volatility': volatility,
+        # Add new indicators
+        'ema12': float(df['ema12'].iloc[-1]) if 'ema12' in df.columns else current_price,
+        'ema26': float(df['ema26'].iloc[-1]) if 'ema26' in df.columns else current_price,
+        'ema50': float(df['ema50'].iloc[-1]) if 'ema50' in df.columns else current_price,
+        'ema200': float(df['ema200'].iloc[-1]) if 'ema200' in df.columns else current_price,
+        'stoch_k': float(df['stoch_k'].iloc[-1]) if 'stoch_k' in df.columns else 50,
+        'stoch_d': float(df['stoch_d'].iloc[-1]) if 'stoch_d' in df.columns else 50,
+        'vwap': float(df['vwap'].iloc[-1]) if 'vwap' in df.columns else current_price,
+        'vwap_rolling': float(df['vwap_rolling'].iloc[-1]) if 'vwap_rolling' in df.columns else current_price,
+        'adx': float(df['adx'].iloc[-1]) if 'adx' in df.columns else 25,
+        'plus_di': float(df['plus_di'].iloc[-1]) if 'plus_di' in df.columns else 25,
+        'minus_di': float(df['minus_di'].iloc[-1]) if 'minus_di' in df.columns else 25,
+        'atr': float(df['atr'].iloc[-1]) if 'atr' in df.columns else 0,
+        'bb_upper': float(df['bb_upper'].iloc[-1]) if 'bb_upper' in df.columns else current_price,
+        'bb_lower': float(df['bb_lower'].iloc[-1]) if 'bb_lower' in df.columns else current_price,
+        'bb_middle': float(df['bb_middle'].iloc[-1]) if 'bb_middle' in df.columns else current_price
     }
     
     # Use selected strategy with enhanced error handling
@@ -2371,7 +2571,9 @@ def trading_loop():
                         continue
 
                     # ML price trend prediction
-                    feature_cols = [col for col in ['close', 'rsi', 'macd', 'macd_signal', 'macd_histogram', 'volume', 'sma5', 'sma20'] if col in df.columns]
+                    feature_cols = [col for col in ['close', 'rsi', 'macd', 'macd_signal', 'macd_histogram', 'volume', 'sma5', 'sma20', 
+                                                   'ema12', 'ema26', 'ema50', 'stoch_k', 'stoch_d', 'vwap_rolling', 'adx', 'plus_di', 'minus_di', 
+                                                   'bb_upper', 'bb_lower', 'atr', 'volatility'] if col in df.columns]
                     ml_trend = None
                     if len(df) > 20 and len(feature_cols) >= 3:
                         try:
