@@ -459,6 +459,9 @@ def get_csv_trade_history(days=30):
             try:
                 # Handle different timestamp formats
                 if 'timestamp' in df.columns:
+                    # Clean timezone info before parsing to avoid FutureWarning
+                    if df['timestamp'].dtype == 'object':
+                        df['timestamp'] = df['timestamp'].str.replace(r'\s+[A-Z]{3,4}$', '', regex=True)
                     # Try to parse the timestamp column
                     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
                     
