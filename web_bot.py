@@ -700,6 +700,18 @@ def initialize_client():
             solution_msg = "Error -2015: Check API key/secret format, IP restrictions, or regenerate API key"
             print(f"💡 {solution_msg}")
             log_error_to_csv(f"{error_msg} | {solution_msg}", "API_ERROR", "initialize_client", "ERROR")
+        elif e.code == -1003:
+            # Rate limit/IP ban error - extract ban time if available
+            solution_msg = "Rate limit exceeded. Bot will wait before retrying. Consider reducing scan frequency."
+            print(f"💡 {solution_msg}")
+            log_error_to_csv(f"{error_msg} | {solution_msg}", "API_ERROR", "initialize_client", "ERROR")
+            
+            # If IP is banned, don't continuously retry - exit gracefully
+            if "IP banned until" in e.message:
+                print("🛑 IP banned detected - Bot stopping to prevent further issues")
+                bot_status['running'] = False
+                bot_status['ban_detected'] = True
+                return False
         else:
             log_error_to_csv(error_msg, "API_ERROR", "initialize_client", "ERROR")
         
@@ -982,9 +994,18 @@ def calculate_macd(prices, fast=None, slow=None, signal=None):
 def fetch_data(symbol="BTCUSDT", interval="1h", limit=100):
     """Fetch historical price data from Binance."""
     try:
+        # Check if bot is banned before making API calls
+        if bot_status.get('ban_detected', False):
+            print(f"⚠️ Skipping data fetch for {symbol} - IP ban detected")
+            return None
+            
         print(f"\n=== Fetching data for {symbol} ===")  # Debug log
         if client:
             print("Using Binance client...")  # Debug log
+            
+            # Add small delay before API call to respect rate limits
+            time.sleep(0.1)  # 100ms delay
+            
             klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
             print(f"Received {len(klines)} candles from Binance")  # Debug log
             df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 
@@ -1158,6 +1179,19 @@ def fetch_data(symbol="BTCUSDT", interval="1h", limit=100):
             df['minus_di'] = 25
         
         return df
+        
+    except BinanceAPIException as e:
+        if e.code == -1003:
+            error_msg = f"Rate limit error fetching data for {symbol}: {e.message}"
+            print(f"⚠️ {error_msg}")
+            log_error_to_csv(error_msg, "RATE_LIMIT_ERROR", "fetch_data", "WARNING")
+            bot_status['ban_detected'] = True
+            return None
+        else:
+            error_msg = f"Binance API error fetching data for {symbol}: {e}"
+            log_error_to_csv(error_msg, "API_ERROR", "fetch_data", "ERROR")
+            bot_status['errors'].append(error_msg)
+            return None
         
     except Exception as e:
         error_msg = f"Error fetching data for {symbol}: {e}"
@@ -2265,11 +2299,15 @@ def execute_trade(signal, symbol="BTCUSDT", qty=None):
         return f"Order failed: {str(e)}"
 
 def scan_trading_pairs(base_assets, quote_asset="USDT", min_volume_usdt=1000000):
-    """Smart multi-coin scanner for best trading opportunities"""
+    """Smart multi-coin scanner for best trading opportunities with rate limiting"""
     opportunities = []
     
-    for base in base_assets:
+    for i, base in enumerate(base_assets):
         try:
+            # Add rate limiting - sleep between API calls to avoid rate limits
+            if i > 0:  # Don't sleep before first request
+                time.sleep(0.5)  # 500ms delay between requests
+            
             symbol = f"{base}{quote_asset}"
             
             # Get 24h ticker statistics
@@ -2280,6 +2318,9 @@ def scan_trading_pairs(base_assets, quote_asset="USDT", min_volume_usdt=1000000)
             # Skip if volume too low
             if volume_usdt < min_volume_usdt:
                 continue
+            
+            # Add another small delay before fetching historical data
+            time.sleep(0.2)  # 200ms delay before fetch_data call
             
             # Fetch market data
             df = fetch_data(symbol=symbol, limit=50)  # Smaller dataset for scanning
@@ -2373,6 +2414,17 @@ def scan_trading_pairs(base_assets, quote_asset="USDT", min_volume_usdt=1000000)
                 'data': df  # Include data for immediate analysis if selected
             })
             
+        except BinanceAPIException as e:
+            if e.code == -1003:
+                log_error_to_csv(f"Rate limit error scanning {base}{quote_asset}: {e.message}", 
+                               "RATE_LIMIT_ERROR", "scan_trading_pairs", "WARNING")
+                bot_status['ban_detected'] = True
+                break  # Stop scanning to prevent further rate limit issues
+            else:
+                log_error_to_csv(f"Binance API error scanning {base}{quote_asset}: {e}", 
+                               "API_ERROR", "scan_trading_pairs", "WARNING")
+            continue
+            
         except Exception as e:
             log_error_to_csv(f"Error scanning {base}{quote_asset}: {e}", 
                            "SCAN_ERROR", "scan_trading_pairs", "WARNING")
@@ -2450,8 +2502,12 @@ def trading_loop():
         print(f"🎯 Scan Reason: STARTUP_SCAN")
         print(f"📊 Market Regime: {bot_status.get('market_regime', 'NORMAL')}")
         
-        # Scan all trading pairs immediately
-        scan_results = scan_trading_pairs()
+        # Scan all trading pairs immediately with rate limiting
+        scan_results = scan_trading_pairs(
+            base_assets=["BTC", "ETH", "BNB"],  # Reduced set for startup
+            quote_asset="USDT",
+            min_volume_usdt=1000000
+        )
         bot_status['last_scan_time'] = get_cairo_time()  # Record scan time
         print(f"✅ Startup scan completed - found {len(scan_results) if scan_results else 0} opportunities")
         
@@ -2520,7 +2576,7 @@ def trading_loop():
             if should_full_scan:
                 print("🔍 Performing FULL MARKET SCAN")
                 opportunities = scan_trading_pairs(
-                    base_assets=["BTC", "ETH", "BNB", "XRP", "SOL", "MATIC", "DOT", "ADA", "AVAX", "LINK"],
+                    base_assets=["BTC", "ETH", "BNB", "XRP", "SOL"],  # Reduced from 10 to 5 coins
                     quote_asset="USDT",
                     min_volume_usdt=500000  # Lower threshold for more opportunities
                 )
@@ -4599,6 +4655,10 @@ if __name__ == '__main__':
     print("\n🚀 Starting CRYPTIX AI Trading Bot...")
     print("=" * 50)
     
+    # Add startup delay to avoid immediate API bombardment
+    print("⏳ Initializing with startup delay...")
+    time.sleep(5)  # 5 second delay before any API calls
+    
     # Initialize auto-start and monitoring systems
     try:
         # Initialize API client once at startup
@@ -4606,6 +4666,12 @@ if __name__ == '__main__':
             print("🔧 Initializing API client...")
             if not initialize_client():
                 print("❌ Failed to initialize API client at startup")
+                
+                # Check if ban was detected
+                if bot_status.get('ban_detected', False):
+                    print("🛑 IP ban detected - exiting to prevent further issues")
+                    print("💡 Wait for ban to lift before restarting the bot")
+                
                 exit(1)
         
         # Start the auto-restart monitor
