@@ -7,3 +7,4 @@ snscrape
 psutil
 pytz
 requests
+scikit-learn>=1.3
