@@ -1,4 +1,8 @@
 timestamp,cairo_time,error_type,error_message,function_name,severity,bot_status
+2025-08-18T12:32:34.818863,2025-08-18 15:32:34 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
+2025-08-18T12:17:11.353379,2025-08-18 15:17:11 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
+2025-08-18T12:01:48.366893,2025-08-18 15:01:48 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
+2025-08-18T12:00:50.066844,2025-08-18 15:00:50 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
 2025-08-18T11:51:42.712883,2025-08-18 14:51:42 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
 2025-08-18T11:36:18.399597,2025-08-18 14:36:18 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
 2025-08-18T11:34:26.495998,2025-08-18 14:34:26 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
