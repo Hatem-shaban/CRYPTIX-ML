@@ -34,6 +34,32 @@ PERIOD_FAST = 5   # Fast moving average period
 PERIOD_SLOW = 20  # Slow moving average period
 ATR_PERIOD = 14   # Average True Range period
 
+# Advanced Indicator Settings (new)
+EMA_PERIODS = {
+    'fast': 12,
+    'slow': 26,
+    'mid': 50,
+    'long': 200
+}
+
+STOCH = {
+    'k_period': 14,
+    'd_period': 3,
+    'overbought': 80,
+    'oversold': 20
+}
+
+VWAP = {
+    # Rolling window (in candles) for VWAP approximation; session VWAP not available in this context
+    'window': 20
+}
+
+ADX = {
+    'period': 14,
+    'min_trend_strict': 25,
+    'min_trend_moderate': 20
+}
+
 # Statistical Parameters
 ZSCORE_THRESHOLD = 2.0  # Z-score threshold for statistical signals
 VAR_CONFIDENCE = 0.95   # Value at Risk confidence level
@@ -42,19 +68,41 @@ VAR_CONFIDENCE = 0.95   # Value at Risk confidence level
 STRICT_STRATEGY = {
     'min_signals': 5,      # Minimum signals required for trade
     'volatility_max': 0.3, # Maximum allowed volatility
-    'trend_strength': 0.02 # Minimum trend strength required
+    'trend_strength': 0.02, # Minimum trend strength required
+    # New indicator gates
+    'ema_alignment': True,     # Require price > EMA50 > EMA200 for buys (reverse for sells)
+    'adx_min': 25,             # Minimum ADX to confirm trend
+    'stoch_buy_max': 30,       # Stochastic K must be <= for BUY
+    'stoch_sell_min': 70,      # Stochastic K must be >= for SELL
+    'use_vwap': True           # Require price relative to VWAP (>= for buy, <= for sell)
 }
 
 MODERATE_STRATEGY = {
     'min_signals': 3,
     'volatility_max': 0.4,
-    'trend_strength': 0.015
+    'trend_strength': 0.015,
+    # Softer indicator gates
+    'ema_alignment': False,
+    'adx_min': 20,
+    'stoch_buy_max': 40,
+    'stoch_sell_min': 60,
+    'use_vwap': True
 }
 
 ADAPTIVE_STRATEGY = {
     'score_threshold': 70,
     'volatility_adjustment': True,
-    'trend_following': True
+    'trend_following': True,
+    # Weights for composite scoring (sum ~ 1.0)
+    'weights': {
+        'rsi': 0.2,
+        'macd': 0.2,
+        'ema_trend': 0.15,
+        'stoch': 0.15,
+        'adx': 0.15,
+        'vwap': 0.15
+    },
+    'adx_min': 20
 }
 
 # Performance Tracking
