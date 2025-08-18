@@ -55,6 +55,13 @@ except ImportError:
 # Load environment variables
 load_dotenv()
 
+# Verbosity helper (set VERBOSE_LOGS=1 to enable extra logs)
+def _verbose() -> bool:
+    try:
+        return str(os.getenv("VERBOSE_LOGS", "")).strip().lower() in {"1", "true", "yes", "on", "debug"}
+    except Exception:
+        return False
+
 # Cairo timezone
 CAIRO_TZ = pytz.timezone('Africa/Cairo')
 
@@ -510,37 +517,34 @@ setup_csv_logging()
 
 # Initialize API credentials with multiple fallback methods for Render deployment
 print("🚀 CRYPTIX Bot Starting...")
-print("🔧 Loading API credentials...")
 
 api_key = None
 api_secret = None
 client = None
 
-# Try multiple methods to get environment variables (important for Render)
+# Try multiple methods to get environment variables without noisy prints
 try:
     # Method 1: os.getenv (standard)
     api_key = os.getenv("API_KEY")
     api_secret = os.getenv("API_SECRET")
-    
     # Method 2: Direct os.environ access (backup)
     if not api_key:
         api_key = os.environ.get("API_KEY")
     if not api_secret:
         api_secret = os.environ.get("API_SECRET")
-    
-    print(f"🔑 Initial credential check:")
-    print(f"   API_KEY loaded: {'✓' if api_key else '✗'}")
-    print(f"   API_SECRET loaded: {'✓' if api_secret else '✗'}")
-    
-    if api_key and api_secret:
-        print(f"   API_KEY format: {len(api_key)} chars, preview: {api_key[:8]}...{api_key[-4:]}")
-        print("✅ Credentials loaded successfully at startup")
-    else:
-        print("⚠️  Credentials not found at startup - will retry during initialization")
-        
+    if _verbose():
+        print(f"🔑 Initial credential check:")
+        print(f"   API_KEY loaded: {'✓' if api_key else '✗'}")
+        print(f"   API_SECRET loaded: {'✓' if api_secret else '✗'}")
+        if api_key and api_secret:
+            print(f"   API_KEY format: {len(api_key)} chars, preview: {api_key[:8]}...{api_key[-4:]}")
+            print("✅ Credentials loaded successfully at startup")
+        else:
+            print("⚠️  Credentials not found at startup - will retry during initialization")
 except Exception as e:
-    print(f"⚠️  Error loading credentials at startup: {e}")
-    print("   Will attempt to load during client initialization")
+    if _verbose():
+        print(f"⚠️  Error loading credentials at startup: {e}")
+        print("   Will attempt to load during client initialization")
 
 # Lightweight sentiment analysis function
 def get_sentiment_score(text):
@@ -597,14 +601,14 @@ def initialize_client():
             None
         )
         
-        # Detailed logging for debugging
-        print(f"🔍 Environment check:")
-        print(f"   API_KEY found: {'Yes' if api_key else 'No'}")
-        print(f"   API_SECRET found: {'Yes' if api_secret else 'No'}")
-        
-        if api_key:
-            print(f"   API_KEY length: {len(api_key)}")
-            print(f"   API_KEY preview: {api_key[:8]}...{api_key[-4:]}")
+        # Detailed logging for debugging (verbose only)
+        if _verbose():
+            print(f"🔍 Environment check:")
+            print(f"   API_KEY found: {'Yes' if api_key else 'No'}")
+            print(f"   API_SECRET found: {'Yes' if api_secret else 'No'}")
+            if api_key:
+                print(f"   API_KEY length: {len(api_key)}")
+                print(f"   API_KEY preview: {api_key[:8]}...{api_key[-4:]}")
         
         if not api_key or not api_secret:
             error_msg = f"API credentials missing - API_KEY: {'✓' if api_key else '✗'}, API_SECRET: {'✓' if api_secret else '✗'}"
@@ -643,6 +647,12 @@ def initialize_client():
 
         print(f"🔗 Initializing Binance client for {'TESTNET' if use_testnet else 'LIVE'} trading...")
         client = Client(api_key, api_secret, testnet=use_testnet)
+        # Ensure Spot Testnet base URL when requested
+        if use_testnet:
+            try:
+                client.API_URL = 'https://testnet.binance.vision/api'
+            except Exception:
+                pass
         try:
             base_url = getattr(client, 'API_URL', None) or getattr(client, 'BASE_URL', None)
             if base_url:
@@ -651,16 +661,23 @@ def initialize_client():
             pass
         
         # Test API connection with minimal call
-        print("📊 Testing API connection...")
+        if _verbose():
+            print("📊 Testing API connection...")
         server_time = client.get_server_time()
         
         # Only get account info if server connection is successful
         account = client.get_account()
         
-        print("✅ API connection successful!")
-        print(f"   Account Type: {account.get('accountType', 'Unknown')}")
-        print(f"   Can Trade: {account.get('canTrade', 'Unknown')}")
-        print(f"   Permissions: {', '.join(account.get('permissions', []))}")
+        if _verbose():
+            print("✅ API connection successful!")
+            print(f"   Account Type: {account.get('accountType', 'Unknown')}")
+            print(f"   Can Trade: {account.get('canTrade', 'Unknown')}")
+            perms = account.get('permissions', [])
+            try:
+                perms_str = ", ".join(perms)
+            except Exception:
+                perms_str = str(perms)
+            print(f"   Permissions: {perms_str}")
         
         bot_status['api_connected'] = True
         bot_status['account_type'] = account.get('accountType', 'Unknown')
@@ -962,11 +979,14 @@ def calculate_macd(prices, fast=None, slow=None, signal=None):
 def fetch_data(symbol="BTCUSDT", interval="1h", limit=100):
     """Fetch historical price data from Binance."""
     try:
-        print(f"\n=== Fetching data for {symbol} ===")  # Debug log
+        if _verbose():
+            print(f"\n=== Fetching data for {symbol} ===")  # Debug log
         if client:
-            print("Using Binance client...")  # Debug log
+            if _verbose():
+                print("Using Binance client...")  # Debug log
             klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-            print(f"Received {len(klines)} candles from Binance")  # Debug log
+            if _verbose():
+                print(f"Received {len(klines)} candles from Binance")  # Debug log
             df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 
                                              'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 
                                              'taker_buy_quote_asset_volume', 'ignore'])
@@ -2685,6 +2705,8 @@ def trading_loop():
     
     # Initial market regime detection and IMMEDIATE first scan
     initial_regime = detect_market_regime()
+    # Mark last regime check now to avoid immediate duplicate checks
+    bot_status['last_volatility_check'] = get_cairo_time()
     initial_interval, initial_mode = calculate_smart_interval()
     
     print(f"🎯 Initial scan mode: {initial_mode} ({initial_interval}s)")
@@ -4698,19 +4720,14 @@ if __name__ == '__main__':
             print("🔧 Initializing API client...")
             if not initialize_client():
                 print("❌ Failed to initialize API client at startup")
-                exit(1)
-        
-        # Configure Flask for production
-        flask_env = os.getenv('FLASK_ENV', 'development')
+                raise RuntimeError("API client init failed")
+
+        # Configure Flask for production by default; override with FLASK_DEBUG=1
         flask_host = os.getenv('FLASK_HOST', '0.0.0.0')
         flask_port = 10000
-        
-        if flask_env == 'production':
-            print(f"🌐 Starting Flask server in PRODUCTION mode on {flask_host}:{flask_port}")
-            app.run(host=flask_host, port=flask_port, debug=False)
-        else:
-            print(f"🌐 Starting Flask server in DEVELOPMENT mode on {flask_host}:{flask_port}")
-            app.run(host=flask_host, port=flask_port, debug=True)
+        flask_debug = str(os.getenv('FLASK_DEBUG', '0')).strip().lower() in ['1', 'true', 'yes', 'on']
+        print(f"🌐 Starting Flask server on {flask_host}:{flask_port} (debug={'ON' if flask_debug else 'OFF'})")
+        app.run(host=flask_host, port=flask_port, debug=flask_debug)
     except Exception as e:
         print(f"Failed to start application: {e}")
         log_error_to_csv(str(e), "STARTUP_ERROR", "main", "CRITICAL")

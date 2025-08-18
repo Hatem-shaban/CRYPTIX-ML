@@ -15,6 +15,13 @@ from functools import wraps
 class TelegramNotifier:
     def __init__(self):
         """Initialize Telegram notifier with configuration"""
+        # Verbosity helper (respects VERBOSE_LOGS env var)
+        def _verbose():
+            try:
+                return str(os.getenv("VERBOSE_LOGS", "")).strip().lower() in {"1", "true", "yes", "on", "debug"}
+            except Exception:
+                return False
+        self._verbose = _verbose
         self.enabled = config.TELEGRAM.get('enabled', False)
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN') or config.TELEGRAM.get('bot_token', '')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID') or config.TELEGRAM.get('chat_id', '')
@@ -45,14 +52,16 @@ class TelegramNotifier:
         self.connection_tested = TelegramNotifier._global_connection_tested
         self.connection_working = TelegramNotifier._global_connection_working
         
-        print(f"🤖 Telegram Notifier initialized - Enabled: {self.enabled}")
+        if self._verbose():
+            print(f"🤖 Telegram Notifier initialized - Enabled: {self.enabled}")
         # Connection test will be performed only once globally to avoid spam
 
     def _test_connection_silent(self) -> bool:
         """Test Telegram bot connection without sending test messages"""
         try:
             if not self.bot_token or not self.chat_id:
-                print("⚠️ Telegram bot token or chat ID not configured")
+                if self._verbose():
+                    print("⚠️ Telegram bot token or chat ID not configured")
                 return False
                 
             # Test if the bot is valid (doesn't send messages)
@@ -60,28 +69,34 @@ class TelegramNotifier:
             if response.status_code == 200:
                 bot_info = response.json()
                 if bot_info.get('ok'):
-                    print(f"✅ Telegram bot is valid: @{bot_info['result']['username']}")
-                    print(f"✅ Chat ID configured: {self.chat_id}")
+                    if self._verbose():
+                        print(f"✅ Telegram bot is valid: @{bot_info['result']['username']}")
+                        print(f"✅ Chat ID configured: {self.chat_id}")
                     return True
                 else:
-                    print(f"❌ Bot validation failed: {bot_info}")
+                    if self._verbose():
+                        print(f"❌ Bot validation failed: {bot_info}")
                     return False
             else:
-                print(f"❌ Bot connection failed: HTTP {response.status_code}")
-                if response.status_code == 401:
-                    print("   - This usually means the bot token is invalid")
+                if self._verbose():
+                    print(f"❌ Bot connection failed: HTTP {response.status_code}")
+                    if response.status_code == 401:
+                        print("   - This usually means the bot token is invalid")
                 return False
                 
         except requests.exceptions.ConnectTimeout:
-            print("⚠️ Connection timeout to Telegram API")
-            print("💡 This might be a local network issue - try testing on your deployed server")
+            if self._verbose():
+                print("⚠️ Connection timeout to Telegram API")
+                print("💡 This might be a local network issue - try testing on your deployed server")
             return False
         except requests.exceptions.ConnectionError:
-            print("⚠️ Connection error to Telegram API")
-            print("💡 Check internet connection or firewall settings")
+            if self._verbose():
+                print("⚠️ Connection error to Telegram API")
+                print("💡 Check internet connection or firewall settings")
             return False
         except Exception as e:
-            print(f"❌ Telegram connection error: {e}")
+            if self._verbose():
+                print(f"❌ Telegram connection error: {e}")
             return False
 
     def test_connection_with_message(self) -> bool:
@@ -92,7 +107,8 @@ class TelegramNotifier:
         """Test Telegram bot connection"""
         try:
             if not self.bot_token or not self.chat_id:
-                print("⚠️ Telegram bot token or chat ID not configured")
+                if self._verbose():
+                    print("⚠️ Telegram bot token or chat ID not configured")
                 return False
                 
             # First, test if the bot is valid
@@ -100,7 +116,8 @@ class TelegramNotifier:
             if response.status_code == 200:
                 bot_info = response.json()
                 if bot_info.get('ok'):
-                    print(f"✅ Bot is valid: @{bot_info['result']['username']}")
+                    if self._verbose():
+                        print(f"✅ Bot is valid: @{bot_info['result']['username']}")
                     
                     # Now test if we can send a message to the chat
                     test_payload = {
@@ -111,34 +128,41 @@ class TelegramNotifier:
                     
                     test_response = requests.post(f"{self.base_url}/sendMessage", json=test_payload, timeout=15)
                     if test_response.status_code == 200:
-                        print(f"✅ Chat connection successful for chat ID: {self.chat_id}")
+                        if self._verbose():
+                            print(f"✅ Chat connection successful for chat ID: {self.chat_id}")
                         return True
                     else:
                         error_data = test_response.json()
                         error_desc = error_data.get('description', 'Unknown error')
-                        print(f"❌ Chat test failed: {error_desc}")
-                        print(f"   - Chat ID used: {self.chat_id}")
-                        print(f"   - Suggestion: Make sure you've sent /start to @{bot_info['result']['username']} first")
+                        if self._verbose():
+                            print(f"❌ Chat test failed: {error_desc}")
+                            print(f"   - Chat ID used: {self.chat_id}")
+                            print(f"   - Suggestion: Make sure you've sent /start to @{bot_info['result']['username']} first")
                         return False
                 else:
-                    print(f"❌ Bot validation failed: {bot_info}")
+                    if self._verbose():
+                        print(f"❌ Bot validation failed: {bot_info}")
                     return False
             else:
-                print(f"❌ Bot connection failed: HTTP {response.status_code}")
-                if response.status_code == 401:
-                    print("   - This usually means the bot token is invalid")
+                if self._verbose():
+                    print(f"❌ Bot connection failed: HTTP {response.status_code}")
+                    if response.status_code == 401:
+                        print("   - This usually means the bot token is invalid")
                 return False
                 
         except requests.exceptions.ConnectTimeout:
-            print("⚠️ Connection timeout to Telegram API")
-            print("💡 This might be a local network issue - try testing on your deployed server")
+            if self._verbose():
+                print("⚠️ Connection timeout to Telegram API")
+                print("💡 This might be a local network issue - try testing on your deployed server")
             return False
         except requests.exceptions.ConnectionError:
-            print("⚠️ Connection error to Telegram API")
-            print("💡 Check internet connection or firewall settings")
+            if self._verbose():
+                print("⚠️ Connection error to Telegram API")
+                print("💡 Check internet connection or firewall settings")
             return False
         except Exception as e:
-            print(f"❌ Telegram connection error: {e}")
+            if self._verbose():
+                print(f"❌ Telegram connection error: {e}")
             return False
 
     def _rate_limit_check(self) -> bool:
@@ -158,20 +182,23 @@ class TelegramNotifier:
             
         # Test connection only once globally when first message is sent
         if not TelegramNotifier._global_connection_tested:
-            print("🔍 Testing Telegram connection (one-time test)...")
+            if self._verbose():
+                print("🔍 Testing Telegram connection (one-time test)...")
             TelegramNotifier._global_connection_working = self._test_connection_silent()
             TelegramNotifier._global_connection_tested = True
             self.connection_working = TelegramNotifier._global_connection_working
             self.connection_tested = True
             if not self.connection_working:
-                print("❌ Telegram connection failed - messages will be skipped")
+                if self._verbose():
+                    print("❌ Telegram connection failed - messages will be skipped")
                 return False
             
         if not self.connection_working:
             return False
             
         if not self._rate_limit_check():
-            print("⚠️ Telegram rate limit exceeded - message queued")
+            if self._verbose():
+                print("⚠️ Telegram rate limit exceeded - message queued")
             self.message_queue.append({'message': message, 'parse_mode': parse_mode})
             return False
             
@@ -196,37 +223,44 @@ class TelegramNotifier:
                     
                     # Provide helpful error messages
                     if 'chat not found' in error_msg.lower():
-                        print(f"❌ Telegram error: Chat not found")
-                        print(f"💡 Solution: Send /start to your bot first")
-                        print(f"   1. Open Telegram and search for your bot")
-                        print(f"   2. Send /start to begin conversation")
-                        print(f"   3. Verify your chat ID: {self.chat_id}")
+                        if self._verbose():
+                            print(f"❌ Telegram error: Chat not found")
+                            print(f"💡 Solution: Send /start to your bot first")
+                            print(f"   1. Open Telegram and search for your bot")
+                            print(f"   2. Send /start to begin conversation")
+                            print(f"   3. Verify your chat ID: {self.chat_id}")
                     elif 'bot was blocked' in error_msg.lower():
-                        print(f"❌ Telegram error: Bot was blocked by user")
-                        print(f"💡 Solution: Unblock the bot in Telegram")
+                        if self._verbose():
+                            print(f"❌ Telegram error: Bot was blocked by user")
+                            print(f"💡 Solution: Unblock the bot in Telegram")
                     else:
-                        print(f"❌ Telegram send failed: {error_msg}")
+                        if self._verbose():
+                            print(f"❌ Telegram send failed: {error_msg}")
                         
                 except:
-                    print(f"❌ Telegram send failed: HTTP {response.status_code}")
+                    if self._verbose():
+                        print(f"❌ Telegram send failed: HTTP {response.status_code}")
                     
                 self.consecutive_errors += 1
                 return False
                 
         except requests.exceptions.ConnectTimeout:
-            print("❌ Telegram connection timeout - network may be restricted")
-            print("💡 This might work on your deployed server even if it fails locally")
+            if self._verbose():
+                print("❌ Telegram connection timeout - network may be restricted")
+                print("💡 This might work on your deployed server even if it fails locally")
             self.consecutive_errors += 1
             self.last_error_time = datetime.now()
             return False
         except requests.exceptions.ConnectionError:
-            print("❌ Telegram connection failed - check internet connection")
-            print("💡 If running locally, this might work on your deployed server")
+            if self._verbose():
+                print("❌ Telegram connection failed - check internet connection")
+                print("💡 If running locally, this might work on your deployed server")
             self.consecutive_errors += 1
             self.last_error_time = datetime.now()
             return False
         except Exception as e:
-            print(f"❌ Telegram send error: {e}")
+            if self._verbose():
+                print(f"❌ Telegram send error: {e}")
             self.consecutive_errors += 1
             self.last_error_time = datetime.now()
             return False
@@ -383,7 +417,8 @@ class TelegramNotifier:
         # If same status was sent in last 30 seconds, skip it
         if (status_key in TelegramNotifier._last_status_sent and 
             (current_time - TelegramNotifier._last_status_sent[status_key]).total_seconds() < 30):
-            print(f"⚠️ Skipping duplicate {status} notification (sent {(current_time - TelegramNotifier._last_status_sent[status_key]).total_seconds():.1f}s ago)")
+            if self._verbose():
+                print(f"⚠️ Skipping duplicate {status} notification (sent {(current_time - TelegramNotifier._last_status_sent[status_key]).total_seconds():.1f}s ago)")
             return False
         
         TelegramNotifier._last_status_sent[status_key] = current_time
