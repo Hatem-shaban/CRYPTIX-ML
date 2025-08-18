@@ -90,7 +90,7 @@ MODERATE_STRATEGY = {
 }
 
 ADAPTIVE_STRATEGY = {
-    'score_threshold': 70,
+    'score_threshold': 30,
     'volatility_adjustment': True,
     'trend_following': True,
     # Weights for composite scoring (sum ~ 1.0)
