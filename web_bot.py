@@ -1661,66 +1661,106 @@ def adaptive_strategy(df, symbol, indicators):
         rsi_buy = 40  # More aggressive in low volatility
         rsi_sell = 60
         
-    # Score-based system (0-100) with weights
+    # Score-based system (0-100) with weights and per-component breakdown
     weights = config.ADAPTIVE_STRATEGY.get('weights', {
         'rsi': 0.2, 'macd': 0.2, 'ema_trend': 0.15, 'stoch': 0.15, 'adx': 0.15, 'vwap': 0.15
     })
-    score = 0.0
-    # RSI
+    components = {
+        'rsi': 0.0,
+        'macd': 0.0,
+        'ema_trend': 0.0,
+        'stoch': 0.0,
+        'adx': 0.0,
+        'vwap': 0.0
+    }
+
+    # RSI (scaled by distance from thresholds)
+    rsi_weight = weights.get('rsi', 0.2)
     if rsi < rsi_buy:
-        score += 100 * weights.get('rsi', 0.2) * 0.6
+        # Normalize by distance to buy threshold
+        rsi_norm = (rsi_buy - rsi) / max(1.0, rsi_buy)
+        components['rsi'] = 100 * rsi_weight * rsi_norm
     elif rsi > rsi_sell:
-        score -= 100 * weights.get('rsi', 0.2) * 0.6
-    # MACD
+        # Normalize by distance to sell threshold
+        rsi_norm = (rsi - rsi_sell) / max(1.0, (100.0 - rsi_sell))
+        components['rsi'] = -100 * rsi_weight * rsi_norm
+    # else stays 0 near neutral band
+
+    # MACD (fixed contribution based on trend)
+    macd_w = weights.get('macd', 0.2)
     if macd_trend == 'BULLISH':
-        score += 100 * weights.get('macd', 0.2) * 0.6
+        components['macd'] = 100 * macd_w * 0.6
     elif macd_trend == 'BEARISH':
-        score -= 100 * weights.get('macd', 0.2) * 0.6
-    # EMA trend
+        components['macd'] = -100 * macd_w * 0.6
+
+    # EMA trend (prefer EMA50/200 alignment; fallback to SMA cross)
+    ema_w = weights.get('ema_trend', 0.15)
     if ema50 is not None and ema200 is not None:
         if current_price > ema50 > ema200:
-            score += 100 * weights.get('ema_trend', 0.15) * 0.6
+            components['ema_trend'] = 100 * ema_w * 0.6
         elif current_price < ema50 < ema200:
-            score -= 100 * weights.get('ema_trend', 0.15) * 0.6
+            components['ema_trend'] = -100 * ema_w * 0.6
     else:
-        # fallback to SMA
         if sma5 > sma20:
-            score += 100 * weights.get('ema_trend', 0.15) * 0.3
+            components['ema_trend'] = 100 * ema_w * 0.3
         else:
-            score -= 100 * weights.get('ema_trend', 0.15) * 0.3
-    # Stochastic
+            components['ema_trend'] = -100 * ema_w * 0.3
+
+    # Stochastic (scaled by distance from overbought/oversold)
+    stoch_w = weights.get('stoch', 0.15)
     if stoch_k is not None:
-        if stoch_k < config.STOCH.get('oversold', 20):
-            score += 100 * weights.get('stoch', 0.15) * 0.6
-        elif stoch_k > config.STOCH.get('overbought', 80):
-            score -= 100 * weights.get('stoch', 0.15) * 0.6
-    # ADX
+        st_oversold = float(config.STOCH.get('oversold', 20))
+        st_overbought = float(config.STOCH.get('overbought', 80))
+        if stoch_k < st_oversold:
+            st_norm = (st_oversold - stoch_k) / max(1.0, st_oversold)
+            components['stoch'] = 100 * stoch_w * st_norm
+        elif stoch_k > st_overbought:
+            st_norm = (stoch_k - st_overbought) / max(1.0, (100.0 - st_overbought))
+            components['stoch'] = -100 * stoch_w * st_norm
+
+    # ADX (symmetric: reward strong trend, small penalty for weak trend)
+    adx_w = weights.get('adx', 0.15)
     if adx is not None:
-        adx_min = config.ADAPTIVE_STRATEGY.get('adx_min', 20)
+        adx_min = float(config.ADAPTIVE_STRATEGY.get('adx_min', 20))
         if adx >= adx_min:
-            score += 100 * weights.get('adx', 0.15) * 0.5
-    # VWAP
+            components['adx'] = 100 * adx_w * 0.5
+        else:
+            deficit_ratio = max(0.0, (adx_min - adx) / max(1.0, adx_min))
+            components['adx'] = -100 * adx_w * 0.2 * deficit_ratio
+
+    # VWAP relation
+    vwap_w = weights.get('vwap', 0.15)
     if vwap is not None:
         if current_price >= vwap:
-            score += 100 * weights.get('vwap', 0.15) * 0.4
+            components['vwap'] = 100 * vwap_w * 0.4
         else:
-            score -= 100 * weights.get('vwap', 0.15) * 0.4
-    
-    # Adjust score based on market regime
+            components['vwap'] = -100 * vwap_w * 0.4
+
+    # Sum base score and apply regime-based scaling to keep breakdown consistent
+    score = sum(components.values())
     if is_high_volatility:
-        score = score * 0.8  # Reduce conviction in high volatility
+        components = {k: v * 0.8 for k, v in components.items()}
     if is_strong_trend:
-        score = score * 1.2  # Increase conviction in strong trends
-        
-    # Use configurable score threshold for decisions
+        components = {k: v * 1.2 for k, v in components.items()}
+    score = sum(components.values())
+
+    # Use configurable score threshold for decisions with concise breakdown
     score_threshold = adaptive_config['score_threshold']
-    
+    breakdown = (
+        f"RSI {components['rsi']:+.1f}, "
+        f"MACD {components['macd']:+.1f}, "
+        f"EMA {components['ema_trend']:+.1f}, "
+        f"Stoch {components['stoch']:+.1f}, "
+        f"ADX {components['adx']:+.1f}, "
+        f"VWAP {components['vwap']:+.1f}"
+    )
+
     if score >= score_threshold:
-        return "BUY", f"Adaptive buy signal (Score: {score:.0f}, Threshold: {score_threshold})"
+        return "BUY", f"Adaptive buy signal (Score: {score:.0f}/{score_threshold}; {breakdown})"
     elif score <= -score_threshold:
-        return "SELL", f"Adaptive sell signal (Score: {score:.0f}, Threshold: {score_threshold})"
+        return "SELL", f"Adaptive sell signal (Score: {score:.0f}/{score_threshold}; {breakdown})"
     
-    return "HOLD", f"Neutral conditions (Score: {score:.0f}, Threshold: ±{score_threshold})"
+    return "HOLD", f"Neutral (Score: {score:.0f}/±{score_threshold}; {breakdown})"
 
 def get_account_balances_summary():
     """Get a summary of all non-zero account balances"""
