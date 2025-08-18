@@ -110,7 +110,7 @@ API_RATE_LIMITS = {
 # Telegram Notification Settings
 TELEGRAM = {
     'enabled': True,  # Enable/disable Telegram notifications
-    'bot_token': '8102715880:AAF5ojmyT4nBADozEXABD5qkngmszVcC6Rw',  # Your Telegram bot token (get from @BotFather)
+    'bot_token': '8244322664:AAFMhtmip4JiX-qk5Xobzdn9CzejRh00Ti4',  # Your Telegram bot token (get from @BotFather)
     'chat_id': '2086996577',    # Your chat ID (get from @userinfobot)
     'notifications': {
         'signals': True,           # Send trading signal notifications
