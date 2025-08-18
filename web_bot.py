@@ -613,23 +613,42 @@ def initialize_client():
             log_error_to_csv(error_msg, "CREDENTIALS_ERROR", "initialize_client", "ERROR")
             return False
         
-        # Validate credential format
-        if len(api_key) != 64:
-            error_msg = f"Invalid API key format - expected 64 characters, got {len(api_key)}"
+        # Determine whether to use Binance Testnet (via env or config)
+        def _truthy(v):
+            return str(v).strip().lower() in {"1", "true", "yes", "on"}
+        env_flag = os.getenv("BINANCE_TESTNET") or os.getenv("USE_TESTNET")
+        use_testnet = _truthy(env_flag) if env_flag is not None else getattr(config, 'USE_TESTNET', False)
+
+        # Validate credential format (less strict for testnet)
+        if not use_testnet and len(api_key) != 64:
+            error_msg = f"Invalid API key format - expected 64 characters for LIVE, got {len(api_key)}"
             print(f"❌ {error_msg}")
             bot_status['errors'].append(error_msg)
             log_error_to_csv(error_msg, "CREDENTIALS_ERROR", "initialize_client", "ERROR")
             return False
-            
-        if len(api_secret) != 64:
-            error_msg = f"Invalid API secret format - expected 64 characters, got {len(api_secret)}"
+        if not use_testnet and len(api_secret) != 64:
+            error_msg = f"Invalid API secret format - expected 64 characters for LIVE, got {len(api_secret)}"
             print(f"❌ {error_msg}")
             bot_status['errors'].append(error_msg)
             log_error_to_csv(error_msg, "CREDENTIALS_ERROR", "initialize_client", "ERROR")
             return False
-        
-        print("🔗 Initializing Binance client for LIVE trading...")
-        client = Client(api_key, api_secret, testnet=False)
+        if use_testnet:
+            # Basic sanity check only
+            if len(api_key) < 24 or len(api_secret) < 24:
+                error_msg = f"Testnet credentials look too short (key {len(api_key)}, secret {len(api_secret)})"
+                print(f"❌ {error_msg}")
+                bot_status['errors'].append(error_msg)
+                log_error_to_csv(error_msg, "CREDENTIALS_ERROR", "initialize_client", "ERROR")
+                return False
+
+        print(f"🔗 Initializing Binance client for {'TESTNET' if use_testnet else 'LIVE'} trading...")
+        client = Client(api_key, api_secret, testnet=use_testnet)
+        try:
+            base_url = getattr(client, 'API_URL', None) or getattr(client, 'BASE_URL', None)
+            if base_url:
+                print(f"   Base URL: {base_url}")
+        except Exception:
+            pass
         
         # Test API connection with minimal call
         print("📊 Testing API connection...")

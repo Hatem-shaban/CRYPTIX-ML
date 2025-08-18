@@ -107,6 +107,11 @@ API_RATE_LIMITS = {
     'weight_per_minute': 6000  # Weight-based limiting
 }
 
+# Binance environment (Spot)
+# Set to True when using Binance Spot Testnet (https://testnet.binance.vision)
+# Can be overridden by env vars BINANCE_TESTNET/USE_TESTNET ("1","true","yes")
+USE_TESTNET = True
+
 # Telegram Notification Settings
 TELEGRAM = {
     'enabled': True,  # Enable/disable Telegram notifications
