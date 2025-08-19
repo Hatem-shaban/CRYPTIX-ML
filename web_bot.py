@@ -1844,6 +1844,13 @@ def get_account_balances_summary():
 def check_coin_balance(symbol):
     """Check if we have sufficient balance to place a SELL order for the given symbol"""
     try:
+        # Cache to reduce repeated API calls within a short window
+        if 'balance_cache' not in bot_status:
+            bot_status['balance_cache'] = {}
+        cache_entry = bot_status['balance_cache'].get(symbol)
+        now = get_cairo_time()
+        if cache_entry and (now - cache_entry['time']).total_seconds() < 300:
+            return cache_entry['has'], cache_entry['amount'], cache_entry['msg']
         if not client:
             print(f"⚠️ Client not initialized - cannot check balance for {symbol}")
             return False, 0, "Client not initialized"
@@ -1900,10 +1907,16 @@ def check_coin_balance(symbol):
         print(f"   Minimum required: {min_sellable_qty} {base_asset}")
         print(f"   Can sell: {'✅ Yes' if has_sufficient_balance else '❌ No'}")
         
-        if has_sufficient_balance:
-            return True, asset_balance, f"Sufficient balance: {asset_balance} {base_asset}"
-        else:
-            return False, asset_balance, f"Insufficient balance: {asset_balance} < {min_sellable_qty} {base_asset}"
+        result = (
+            (True, asset_balance, f"Sufficient balance: {asset_balance} {base_asset}")
+            if has_sufficient_balance
+            else (False, asset_balance, f"Insufficient balance: {asset_balance} < {min_sellable_qty} {base_asset}")
+        )
+        # Save to cache
+        bot_status['balance_cache'][symbol] = {
+            'has': result[0], 'amount': result[1], 'msg': result[2], 'time': now
+        }
+        return result
             
     except Exception as e:
         error_msg = f"Error checking balance for {symbol}: {e}"
@@ -1934,8 +1947,10 @@ def signal_generator(df, symbol="BTCUSDT"):
     
     # Reduce activity after consecutive losses
     if consecutive_losses >= config.MAX_CONSECUTIVE_LOSSES:
-        log_signal_to_csv("HOLD", 0, {"symbol": symbol}, f"Too many consecutive losses: {consecutive_losses}")
-        return "HOLD"
+        # Still compute a signal but enforce HOLD at the end; don't spam with repeated logs
+        risk_locked = True
+    else:
+        risk_locked = False
     
     sentiment = analyze_market_sentiment()
     
@@ -2131,13 +2146,12 @@ def signal_generator(df, symbol="BTCUSDT"):
                 print(f"⚠️ Error checking USDT balance: {e}")
                 # Continue with BUY signal if balance check fails
         
-        # Log strategy decision to signals log
-        log_signal_to_csv(
-            signal,
-            current_price,
-            indicators,
-            f"Strategy {strategy} - {reason}"
-        )
+        # Enforce risk lock AFTER computing signal
+        if risk_locked and signal != "HOLD":
+            reason = f"Risk lock (consecutive losses {consecutive_losses}/{config.MAX_CONSECUTIVE_LOSSES})"
+            signal = "HOLD"
+        # Log strategy decision to signals log (single place)
+        log_signal_to_csv(signal, current_price, indicators, f"Strategy {strategy} - {reason}")
         
         # Send Telegram notification for trading signals
         if TELEGRAM_AVAILABLE and signal in ["BUY", "SELL"]:
@@ -2158,12 +2172,19 @@ def update_trade_tracking(trade_result, profit_loss=0):
     """Track consecutive wins/losses for smart risk management"""
     try:
         if trade_result == 'success':
+            # Only update streaks on realized PnL events
+            # Treat profit_loss == 0 (e.g., BUY entries or unknown PnL) as neutral: no change
+            if profit_loss is None:
+                return
             if profit_loss > 0:
-                bot_status['consecutive_losses'] = 0  # Reset on profitable trade
+                bot_status['consecutive_losses'] = 0  # Reset on profitable close
                 bot_status['consecutive_wins'] = bot_status.get('consecutive_wins', 0) + 1
-            else:
+            elif profit_loss < 0:
                 bot_status['consecutive_losses'] = bot_status.get('consecutive_losses', 0) + 1
                 bot_status['consecutive_wins'] = 0
+            else:
+                # Flat/unknown PnL: don't modify counters
+                bot_status['consecutive_wins'] = bot_status.get('consecutive_wins', 0)
         else:
             bot_status['consecutive_losses'] = bot_status.get('consecutive_losses', 0) + 1
             bot_status['consecutive_wins'] = 0
@@ -2296,112 +2317,119 @@ def execute_trade(signal, symbol="BTCUSDT", qty=None):
         if signal == "BUY":
             print("Processing BUY order...")
             account_info = client.get_account()
-            
+
             # Debug: Print all balances to see what we're getting
             print("=== Account Balances Debug ===")
             for balance in account_info['balances']:
                 if float(balance['free']) > 0 or balance['asset'] == 'USDT':
                     print(f"{balance['asset']}: free={balance['free']}, locked={balance['locked']}")
-            
+
             # More robust USDT balance extraction
             usdt_balance = None
             for balance in account_info['balances']:
                 if balance['asset'] == 'USDT':
                     usdt_balance = balance
                     break
-            
+
             if usdt_balance is None:
                 print("❌ USDT balance not found in account")
                 trade_info['status'] = 'no_usdt_balance'
                 bot_status['trading_summary']['failed_trades'] += 1
                 log_error_to_csv("USDT balance not found in account", "BALANCE_ERROR", "execute_trade", "ERROR")
                 return "USDT balance not found"
-            
+
             usdt = float(usdt_balance['free'])
             print(f"USDT available for buy: {usdt}")
             print(f"Minimum required: 10 USDT")
             print(f"Risk amount would be: {usdt * (config.RISK_PERCENTAGE / 100):.2f} USDT")
-            
-            if usdt < 10: 
+
+            if usdt < 10:
                 print("❌ Insufficient USDT balance (minimum 10 USDT required)")
                 trade_info['status'] = 'insufficient_funds'
                 bot_status['trading_summary']['failed_trades'] += 1
                 log_error_to_csv(f"Insufficient USDT for buy: {usdt} < 10", "BALANCE_ERROR", "execute_trade", "WARNING")
                 return f"Insufficient USDT: {usdt:.2f} < 10.00"
-            
+
             order = client.order_market_buy(symbol=symbol, quantity=qty)
             trade_info['price'] = float(order['fills'][0]['price']) if order['fills'] else 0
             trade_info['value'] = float(order['cummulativeQuoteQty'])
             trade_info['fee'] = sum([float(fill['commission']) for fill in order['fills']])
             trade_info['status'] = 'success'
-            
+
             # Update trading summary
             bot_status['trading_summary']['total_buy_volume'] += trade_info['value']
             bot_status['trading_summary']['successful_trades'] += 1
-            
+
         elif signal == "SELL":
             print("Processing SELL order...")
-            
+
             # Double-check balance before executing (additional safety)
             has_balance, available_balance, balance_msg = check_coin_balance(symbol)
-            
+
             if not has_balance:
                 print(f"❌ Final balance check failed: {balance_msg}")
                 trade_info['status'] = 'insufficient_funds'
                 trade_info['error'] = balance_msg
                 bot_status['trading_summary']['failed_trades'] += 1
-                log_error_to_csv(f"SELL order blocked by final balance check: {balance_msg}", 
-                               "BALANCE_ERROR", "execute_trade", "WARNING")
+                log_error_to_csv(f"SELL order blocked by final balance check: {balance_msg}",
+                                 "BALANCE_ERROR", "execute_trade", "WARNING")
                 return f"SELL order blocked: {balance_msg}"
-            
+
             # Extract base asset from symbol (e.g., "BTC" from "BTCUSDT")
             base_asset = symbol[:-4] if symbol.endswith('USDT') else symbol.split(symbol_info['quoteAsset'])[0]
-            
+
             print(f"✅ Final balance check passed. Proceeding with SELL order...")
             print(f"Available {base_asset} balance: {available_balance}")
             print(f"Requested quantity: {qty}")
-            
+
             # Adjust quantity if needed to not exceed available balance
             if qty > available_balance:
                 print(f"⚠️ Adjusting quantity from {qty} to {available_balance} (max available)")
                 qty = available_balance
                 trade_info['quantity'] = qty
-            
+
             # Final quantity check with minimum requirements
             if qty <= 0:
                 print("❌ Quantity is zero or negative after adjustments")
                 trade_info['status'] = 'insufficient_quantity'
                 bot_status['trading_summary']['failed_trades'] += 1
                 return "Cannot place SELL order: quantity too small"
-            
+
             print(f"🚀 Placing market sell order: {qty} {base_asset}")
             order = client.order_market_sell(symbol=symbol, quantity=qty)
             trade_info['price'] = float(order['fills'][0]['price']) if order['fills'] else 0
             trade_info['value'] = float(order['cummulativeQuoteQty'])
             trade_info['fee'] = sum([float(fill['commission']) for fill in order['fills']])
             trade_info['status'] = 'success'
-            
+
             print(f"✅ SELL order executed successfully!")
             print(f"   Order ID: {order.get('orderId', 'N/A')}")
             print(f"   Price: ${trade_info['price']:.4f}")
             print(f"   Value: ${trade_info['value']:.2f}")
             print(f"   Fee: ${trade_info['fee']:.4f}")
-            
+
             # Update trading summary
             bot_status['trading_summary']['total_sell_volume'] += trade_info['value']
             bot_status['trading_summary']['successful_trades'] += 1
-            
-            # Calculate revenue (sell value minus average buy cost)
-            if bot_status['trading_summary']['total_buy_volume'] > 0:
-                avg_buy_price = bot_status['trading_summary']['total_buy_volume'] / (bot_status['trading_summary']['successful_trades'] / 2)  # Rough estimate
-                revenue = trade_info['value'] - (qty * avg_buy_price)
-                bot_status['trading_summary']['total_revenue'] += revenue
-        
+
+            # Calculate revenue (sell value minus rough cost basis)
+            revenue = 0
+            try:
+                if bot_status['trading_summary']['total_buy_volume'] > 0 and qty and qty > 0:
+                    # Rough average buy price estimate
+                    avg_buy_price = bot_status['trading_summary']['total_buy_volume'] / max(1, (bot_status['trading_summary']['successful_trades'] // 2 or 1))
+                    revenue = trade_info['value'] - (qty * avg_buy_price)
+            except Exception:
+                revenue = 0
+            bot_status['trading_summary']['total_revenue'] += revenue
+            # Track daily_loss (treat negative revenue as loss)
+            bot_status['daily_loss'] = bot_status.get('daily_loss', 0.0) + (-revenue if revenue < 0 else 0.0)
+
         # Update trade history (keep last 10 trades)
         bot_status['trading_summary']['trades_history'].insert(0, trade_info)
         if len(bot_status['trading_summary']['trades_history']) > 10:
             bot_status['trading_summary']['trades_history'].pop()
-        
+
         # Log real trade to CSV
         try:
             balance_before = balance_after = 0
@@ -2416,55 +2444,57 @@ def execute_trade(signal, symbol="BTCUSDT", qty=None):
                     elif balance['asset'] == 'BTC':
                         btc_balance = float(balance['free'])
                 balance_after = usdt_balance + (btc_balance * trade_info['price'])
-            
+
             additional_data = {
                 'rsi': bot_status.get('rsi', 50),
                 'macd_trend': bot_status.get('macd', {}).get('trend', 'NEUTRAL'),
                 'sentiment': bot_status.get('sentiment', 'neutral'),
                 'balance_before': balance_before,
                 'balance_after': balance_after,
-                'profit_loss': revenue if signal == "SELL" and 'revenue' in locals() else 0,
+                'profit_loss': (revenue if (signal == "SELL" and 'revenue' in locals()) else 0),
                 'order_id': order.get('orderId', '') if 'order' in locals() else ''
             }
             trade_info['order_id'] = additional_data['order_id']
             trade_info['profit_loss'] = additional_data['profit_loss']
             log_trade_to_csv(trade_info, additional_data)
-            
+
             # Send Telegram notification for successful trades
             if TELEGRAM_AVAILABLE:
                 try:
                     notify_trade(trade_info, is_executed=True)
                 except Exception as telegram_error:
                     print(f"Telegram trade notification failed: {telegram_error}")
-                    
+
         except Exception as csv_error:
             log_error_to_csv(f"CSV logging error: {csv_error}", "CSV_ERROR", "execute_trade", "WARNING")
-        
+
         # Update statistics
         total_trades = bot_status['trading_summary']['successful_trades'] + bot_status['trading_summary']['failed_trades']
         bot_status['total_trades'] = total_trades
-        
+
         if total_trades > 0:
             bot_status['trading_summary']['win_rate'] = (bot_status['trading_summary']['successful_trades'] / total_trades) * 100
             bot_status['trading_summary']['average_trade_size'] = (
                 bot_status['trading_summary']['total_buy_volume'] + bot_status['trading_summary']['total_sell_volume']
             ) / total_trades if total_trades > 0 else 0
-        
-        # Update smart trade tracking
-        profit_loss = revenue if signal == "SELL" and 'revenue' in locals() else 0
-        update_trade_tracking('success', profit_loss)
-        
+
+        # Update smart trade tracking (only pass PnL for realized SELLs)
+        realized_pnl = None
+        if signal == "SELL":
+            realized_pnl = revenue
+        update_trade_tracking('success', realized_pnl)
+
         return f"{signal} order executed: {order['orderId']} at ${trade_info['price']:.2f}"
-        
+
     except BinanceAPIException as e:
         trade_info['status'] = 'api_error'
         bot_status['trading_summary']['failed_trades'] += 1
         bot_status['trading_summary']['trades_history'].insert(0, trade_info)
         bot_status['errors'].append(str(e))
-        
+
         # Update smart trade tracking for failed trades
-        update_trade_tracking('failed', -1)  # Mark as loss
-        
+        update_trade_tracking('failed', -1)
+
         # Log failed trade to CSV
         additional_data = {
             'rsi': bot_status.get('rsi', 50),
@@ -2476,14 +2506,14 @@ def execute_trade(signal, symbol="BTCUSDT", qty=None):
         }
         log_trade_to_csv(trade_info, additional_data)
         log_error_to_csv(str(e), "API_ERROR", "execute_trade", "ERROR")
-        
+
         # Send Telegram notification for failed trades
         if TELEGRAM_AVAILABLE:
             try:
                 notify_trade(trade_info, is_executed=False)
             except Exception as telegram_error:
                 print(f"Telegram failed trade notification failed: {telegram_error}")
-        
+
         return f"Order failed: {str(e)}"
 
 def scan_trading_pairs(base_assets=None, quote_asset="USDT", min_volume_usdt=1000000):
@@ -2738,6 +2768,29 @@ def trading_loop():
     while bot_status['running']:
         try:
             current_time = get_cairo_time()
+
+            # Safety: decay consecutive losses after cooldown period (e.g., 2 hours without trades)
+            try:
+                last_trade_time = None
+                if bot_status.get('trading_summary', {}).get('trades_history'):
+                    last_trade = bot_status['trading_summary']['trades_history'][0]
+                    last_trade_time = last_trade.get('timestamp')
+                if last_trade_time:
+                    # Parse time if string
+                    if isinstance(last_trade_time, str):
+                        try:
+                            last_trade_dt = datetime.fromisoformat(last_trade_time.replace('Z', '+00:00'))
+                        except Exception:
+                            last_trade_dt = current_time
+                    else:
+                        last_trade_dt = last_trade_time
+                    if (current_time - last_trade_dt).total_seconds() > 2 * 3600:
+                        # Gradually reduce penalties
+                        bot_status['consecutive_losses'] = max(0, bot_status.get('consecutive_losses', 0) - 1)
+                # Hard cap to avoid indefinite lockout
+                bot_status['consecutive_losses'] = min(bot_status.get('consecutive_losses', 0), config.MAX_CONSECUTIVE_LOSSES)
+            except Exception:
+                pass
             
             # Health check - only reinitialize if connection is actually lost
             if not bot_status['api_connected']:
