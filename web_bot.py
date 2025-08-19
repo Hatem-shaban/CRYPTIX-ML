@@ -3044,19 +3044,17 @@ def trading_loop():
                 except Exception as telegram_error:
                     print(f"Telegram market update failed: {telegram_error}")
             
-            # Send daily summary at end of day (Cairo time)
-            if TELEGRAM_AVAILABLE:
+            # Send daily summary each day at 08:00 Cairo time (once per day)
+            if TELEGRAM_AVAILABLE and config.TELEGRAM.get('notifications', {}).get('daily_summary', True):
                 try:
-                    current_hour = current_time.hour
                     last_summary_date = bot_status.get('last_daily_summary')
                     current_date = current_time.strftime('%Y-%m-%d')
-                    
-                    # Send daily summary at 23:30 Cairo time, once per day
-                    if (current_hour == 23 and current_time.minute >= 30 and 
+                    # Trigger within the first 15 minutes after 08:00 to allow for scheduling jitter
+                    if (current_time.hour == 8 and current_time.minute < 15 and
                         (last_summary_date != current_date)):
                         notify_daily_summary(bot_status.get('trading_summary', {}))
                         bot_status['last_daily_summary'] = current_date
-                        print(f"📊 Daily summary sent via Telegram for {current_date}")
+                        print(f"📊 Daily summary sent via Telegram for {current_date} (08:00 Cairo)")
                 except Exception as telegram_error:
                     print(f"Daily summary notification failed: {telegram_error}")
             
