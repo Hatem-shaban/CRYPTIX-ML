@@ -183,3 +183,6 @@ TELEGRAM = {
         'batch_notifications': True      # Batch similar notifications
     }
 }
+
+# Simple toggle for sending signal notifications (BUY/SELL); trades remain enabled
+TELEGRAM_SEND_SIGNALS = False

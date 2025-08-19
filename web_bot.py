@@ -2091,7 +2091,7 @@ def signal_generator(df, symbol="BTCUSDT"):
                 )
                 
                 # Send Telegram notification about blocked sell signal
-                if TELEGRAM_AVAILABLE:
+                if TELEGRAM_AVAILABLE and getattr(config, 'TELEGRAM_SEND_SIGNALS', False):
                     try:
                         notify_signal("HOLD", symbol, current_price, indicators, 
                                     f"SELL blocked - {balance_msg}")
@@ -2130,7 +2130,7 @@ def signal_generator(df, symbol="BTCUSDT"):
                         )
                         
                         # Send Telegram notification about blocked buy signal
-                        if TELEGRAM_AVAILABLE:
+                        if TELEGRAM_AVAILABLE and getattr(config, 'TELEGRAM_SEND_SIGNALS', False):
                             try:
                                 notify_signal("HOLD", symbol, current_price, indicators, 
                                             f"BUY blocked - insufficient USDT: ${usdt_balance:.2f}")
@@ -2152,14 +2152,14 @@ def signal_generator(df, symbol="BTCUSDT"):
             signal = "HOLD"
         # Log strategy decision to signals log (single place)
         log_signal_to_csv(signal, current_price, indicators, f"Strategy {strategy} - {reason}")
-        
-        # Send Telegram notification for trading signals
-        if TELEGRAM_AVAILABLE and signal in ["BUY", "SELL"]:
+
+        # Send Telegram notification for trading signals (configurable)
+        if TELEGRAM_AVAILABLE and signal in ["BUY", "SELL"] and getattr(config, 'TELEGRAM_SEND_SIGNALS', False):
             try:
                 notify_signal(signal, symbol, current_price, indicators, reason)
             except Exception as telegram_error:
                 print(f"Telegram signal notification failed: {telegram_error}")
-        
+
     except Exception as e:
         error_msg = f"Error in strategy execution: {str(e)}"
         print(error_msg)  # Debug log
