@@ -1,11 +1,4 @@
 timestamp,cairo_time,error_type,error_message,function_name,severity,bot_status
-2025-08-18T12:32:34.818863,2025-08-18 15:32:34 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
-2025-08-18T12:17:11.353379,2025-08-18 15:17:11 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
-2025-08-18T12:01:48.366893,2025-08-18 15:01:48 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
-2025-08-18T12:00:50.066844,2025-08-18 15:00:50 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
-2025-08-18T11:51:42.712883,2025-08-18 14:51:42 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
-2025-08-18T11:36:18.399597,2025-08-18 14:36:18 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
-2025-08-18T11:34:26.495998,2025-08-18 14:34:26 EEST,SCAN_ERROR,Error scanning MATICUSDT: APIError(code=-1121): Invalid symbol.,scan_trading_pairs,WARNING,True
 2025-08-13T13:38:00.714560,2025-08-13 16:38:00 EEST,STRATEGY_CHANGE,Strategy changed from ADAPTIVE to MODERATE,set_strategy,INFO,FALSE
 2025-08-13T14:06:06.178060,2025-08-13 17:06:06 EEST,RISK_WARNING,Consecutive losses: 3,update_trade_tracking,WARNING,TRUE
 2025-08-13T14:45:55.094048,2025-08-13 17:45:55 EEST,BALANCE_ERROR,Insufficient DOT for sell order,execute_trade,WARNING,TRUE
@@ -44,3 +37,6 @@ timestamp,cairo_time,error_type,error_message,function_name,severity,bot_status
 2025-08-16T16:34:49.351429,2025-08-16 19:34:49 EEST,BALANCE_ERROR,Insufficient USDT for buy: 2.46648853 < 10,execute_trade,WARNING,TRUE
 2025-08-17T02:40:52.141147,2025-08-17 05:40:52 EEST,BALANCE_ERROR,Insufficient USDT for buy: 2.46648853 < 10,execute_trade,WARNING,TRUE
 2025-08-17T02:44:05.363967,2025-08-17 05:44:05 EEST,BALANCE_ERROR,Insufficient USDT for buy: 2.46648853 < 10,execute_trade,WARNING,TRUE
+2025-08-18T22:03:57.164938,2025-08-19 01:03:57 EEST,RISK_WARNING,Consecutive losses: 5,update_trade_tracking,WARNING,TRUE
+2025-08-18T21:53:32.268813,2025-08-19 00:53:32 EEST,RISK_WARNING,Consecutive losses: 4,update_trade_tracking,WARNING,TRUE
+2025-08-18T18:46:25.150914,2025-08-18 21:46:25 EEST,RISK_WARNING,Consecutive losses: 3,update_trade_tracking,WARNING,TRUE
