@@ -322,33 +322,90 @@ def log_signal_to_csv(signal, price, indicators, reason=""):
         import traceback
         print(f"Stack trace: {traceback.format_exc()}")
 
-def log_daily_performance():
-    """Log daily performance summary to CSV"""
+def log_daily_performance(date_dt: datetime | None = None):
+    """Compute and log daily performance for the given Cairo date.
+    If date_dt is None, uses current Cairo date. Avoids duplicate rows for the same date.
+    Metrics are computed from logs/trade_history.csv to ensure per-day accuracy.
+    """
     try:
         csv_files = setup_csv_logging()
-        
-        # Calculate daily P&L and metrics
-        today = get_cairo_time().strftime('%Y-%m-%d')
-        trading_summary = bot_status.get('trading_summary', {})
-        
+
+        # Determine which date to log (Cairo date string YYYY-MM-DD)
+        day_dt = date_dt or get_cairo_time()
+        if day_dt.tzinfo is None:
+            day_dt = pytz.UTC.localize(day_dt).astimezone(CAIRO_TZ)
+        elif day_dt.tzinfo != CAIRO_TZ:
+            day_dt = day_dt.astimezone(CAIRO_TZ)
+        day_str = day_dt.strftime('%Y-%m-%d')
+
+        # Check if already logged for this date
+        already_logged = False
+        if csv_files['performance'].exists():
+            try:
+                pdf = pd.read_csv(csv_files['performance'])
+                if not pdf.empty and 'date' in pdf.columns:
+                    already_logged = (pdf['date'].astype(str) == day_str).any()
+            except Exception:
+                pass
+        if already_logged:
+            return True
+
+        # Compute metrics from trade history
+        total_trades = successful_trades = failed_trades = 0
+        win_rate = 0.0
+        total_revenue = 0.0
+        daily_pnl = 0.0
+        total_volume = 0.0
+        max_drawdown = 0.0  # Placeholder
+
+        if csv_files['trades'].exists():
+            try:
+                tdf = pd.read_csv(csv_files['trades'])
+                if not tdf.empty:
+                    # Ensure columns exist
+                    if 'cairo_time' in tdf.columns:
+                        # Extract Cairo date portion
+                        tdf['cairo_date'] = tdf['cairo_time'].astype(str).str[:10]
+                        ddf = tdf[tdf['cairo_date'] == day_str]
+                    else:
+                        ddf = pd.DataFrame()
+
+                    if not ddf.empty:
+                        total_trades = len(ddf)
+                        successful_trades = int((ddf.get('status', pd.Series(dtype=str)) == 'success').sum())
+                        failed_trades = total_trades - successful_trades
+                        # Sum numeric fields safely
+                        if 'profit_loss' in ddf.columns:
+                            daily_pnl = pd.to_numeric(ddf['profit_loss'], errors='coerce').fillna(0).sum()
+                        if 'value' in ddf.columns:
+                            total_volume = pd.to_numeric(ddf['value'], errors='coerce').fillna(0).sum()
+                        # For total_revenue, reuse daily_pnl as realized result
+                        total_revenue = float(daily_pnl)
+                        win_rate = (successful_trades / total_trades * 100.0) if total_trades > 0 else 0.0
+            except Exception as e:
+                print(f"Error computing daily metrics for {day_str}: {e}")
+
+        # Prepare row
         performance_data = [
-            today,
-            trading_summary.get('successful_trades', 0) + trading_summary.get('failed_trades', 0),
-            trading_summary.get('successful_trades', 0),
-            trading_summary.get('failed_trades', 0),
-            trading_summary.get('win_rate', 0),
-            trading_summary.get('total_revenue', 0),
-            trading_summary.get('total_revenue', 0),  # Daily P&L (simplified)
-            trading_summary.get('total_buy_volume', 0) + trading_summary.get('total_sell_volume', 0),
-            0  # Max drawdown (to be calculated)
+            day_str,
+            total_trades,
+            successful_trades,
+            failed_trades,
+            win_rate,
+            total_revenue,
+            daily_pnl,
+            total_volume,
+            max_drawdown
         ]
-        
+
+        # Append row
         with open(csv_files['performance'], 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(performance_data)
-            
+        return True
     except Exception as e:
         print(f"Error logging daily performance to CSV: {e}")
+        return False
 
 def log_error_to_csv(error_message, error_type="GENERAL", function_name="", severity="ERROR"):
     """Log errors to CSV file"""
@@ -3044,17 +3101,22 @@ def trading_loop():
                 except Exception as telegram_error:
                     print(f"Telegram market update failed: {telegram_error}")
             
-            # Send daily summary each day at 08:00 Cairo time (once per day)
-            if TELEGRAM_AVAILABLE and config.TELEGRAM.get('notifications', {}).get('daily_summary', True):
+            # Send daily summary each day at 08:00 Cairo time (once per day) and log daily performance for the previous day
+            if config.TELEGRAM.get('notifications', {}).get('daily_summary', True):
                 try:
                     last_summary_date = bot_status.get('last_daily_summary')
                     current_date = current_time.strftime('%Y-%m-%d')
                     # Trigger within the first 15 minutes after 08:00 to allow for scheduling jitter
                     if (current_time.hour == 8 and current_time.minute < 15 and
                         (last_summary_date != current_date)):
-                        notify_daily_summary(bot_status.get('trading_summary', {}))
+                        # First, write yesterday's performance row to CSV
+                        yesterday = (current_time - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+                        log_daily_performance(yesterday)
+                        # Then, send Telegram daily summary if Telegram is available
+                        if TELEGRAM_AVAILABLE:
+                            notify_daily_summary(bot_status.get('trading_summary', {}))
                         bot_status['last_daily_summary'] = current_date
-                        print(f"📊 Daily summary sent via Telegram for {current_date} (08:00 Cairo)")
+                        print(f"📊 Daily performance logged and summary processed for {current_date} (08:00 Cairo)")
                 except Exception as telegram_error:
                     print(f"Daily summary notification failed: {telegram_error}")
             
