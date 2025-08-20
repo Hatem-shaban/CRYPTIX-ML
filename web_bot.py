@@ -262,6 +262,17 @@ def log_signal_to_csv(signal, price, indicators, reason=""):
         current_time = datetime.now()
         
         print(f"🔍 Attempting to log signal: {signal} for {symbol} at ${price:.4f}")  # Debug
+
+        # Reduce noise: only log HOLD if it's a transition or reason is important
+        try:
+            last_logged = bot_status.get('last_logged_signal', {}).get(symbol)
+            important = signal in ("BUY", "SELL") or (isinstance(reason, str) and ("blocked" in reason.lower() or "error" in reason.lower()))
+            if signal == "HOLD" and last_logged == "HOLD" and not important:
+                print(f"ℹ️ Skipping HOLD log for {symbol} (no transition)")
+                return
+            bot_status.setdefault('last_logged_signal', {})[symbol] = signal
+        except Exception:
+            pass
         
         # GLOBAL rate limiting - prevent ANY signal generation too frequently
         if last_signal_time is not None:
@@ -564,7 +575,12 @@ bot_status = {
         'average_trade_size': 0.0,
         'win_rate': 0.0,
         'trades_history': []  # Last 10 trades for display
-    }
+    },
+    # Caches
+    'exchange_info_cache': None,   # {'time': datetime, 'data': {...}}
+    'coinbase_cache': {},          # {'BTC-USD': {'time': dt, 'data': {...}}}
+    # Logging deduplication
+    'last_logged_signal': {}       # per-symbol last logged signal value
 }
 
 app = Flask(__name__)
@@ -770,69 +786,75 @@ def initialize_client():
 
 # Market data based sentiment analysis is used instead of social sentiment
 
-def fetch_coinbase_data():
-
+def fetch_coinbase_data(product: str = "BTC-USD", ttl_seconds: int = 30):
+    """Fetch Coinbase public market data with simple TTL cache and backoff.
+    Returns dict with order_book, recent_trades, timestamp or None on error.
+    """
     try:
-        # Using requests to fetch Coinbase public API data
-        base_url = "https://api.exchange.coinbase.com"  # Updated to new API endpoint
+        # TTL cache
+        cache = bot_status.get('coinbase_cache') or {}
+        entry = cache.get(product)
+        now = get_cairo_time()
+        if entry and (now - entry['time']).total_seconds() < ttl_seconds:
+            return entry['data']
+
+        base_url = "https://api.exchange.coinbase.com"
         headers = {
-            'User-Agent': 'Binance-AI-Bot/1.0',
+            'User-Agent': 'CRYPTIX-ML/1.0',
             'Accept': 'application/json'
         }
-        
-        # Implement rate limiting (sleep between requests)
-        time.sleep(0.35)  # ~3 requests per second max
-        
-        print("Fetching Coinbase order book...")  # Debug log
-        # Get order book with error handling
-        order_book_response = requests.get(
-            f"{base_url}/products/BTC-USD/book?level=2",
-            headers=headers,
-            timeout=5
-        )
-        if order_book_response.status_code == 429:
-            log_error_to_csv("Coinbase rate limit exceeded", "API_RATE_LIMIT", "fetch_coinbase_data", "WARNING")
-            time.sleep(1)  # Wait longer on rate limit
-            order_book_response = requests.get(f"{base_url}/products/BTC-USD/book?level=2", headers=headers)
-        elif order_book_response.status_code != 200:
-            error_msg = f"Coinbase order book request failed with status {order_book_response.status_code}: {order_book_response.text}"
-            print(error_msg)  # Debug log
-            log_error_to_csv(error_msg, "COINBASE_ERROR", "fetch_coinbase_data", "ERROR")
+
+        if _verbose():
+            print(f"Fetching Coinbase order book for {product}...")
+
+        # Helper for GET with backoff
+        def get_with_backoff(url, max_retries=3):
+            delay = 0.35
+            for attempt in range(max_retries):
+                try:
+                    resp = requests.get(url, headers=headers, timeout=5)
+                except Exception as req_err:
+                    if attempt == max_retries - 1:
+                        raise req_err
+                    time.sleep(delay)
+                    delay = min(delay * 2, 2.0)
+                    continue
+                if resp.status_code == 200:
+                    return resp
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get('Retry-After')
+                    wait_s = float(retry_after) if retry_after else delay
+                    log_error_to_csv("Coinbase rate limit exceeded", "API_RATE_LIMIT", "fetch_coinbase_data", "WARNING")
+                    time.sleep(wait_s)
+                    delay = min(delay * 2, 2.0)
+                    continue
+                # Other errors: raise after final attempt
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                time.sleep(delay)
+                delay = min(delay * 2, 2.0)
             return None
-            
-        try:
-            order_book = order_book_response.json()
-            if not isinstance(order_book, dict) or 'bids' not in order_book or 'asks' not in order_book:
-                error_msg = f"Invalid order book response format: {order_book}"
-                print(error_msg)  # Debug log
-                log_error_to_csv(error_msg, "COINBASE_ERROR", "fetch_coinbase_data", "ERROR")
-                return None
-        except ValueError as e:
-            error_msg = f"Failed to parse order book JSON: {e}"
-            print(error_msg)  # Debug log
-            log_error_to_csv(error_msg, "COINBASE_ERROR", "fetch_coinbase_data", "ERROR")
+
+        # Requests
+        order_book_resp = get_with_backoff(f"{base_url}/products/{product}/book?level=2")
+        order_book = order_book_resp.json() if order_book_resp is not None else None
+        if not isinstance(order_book, dict) or 'bids' not in order_book or 'asks' not in order_book:
+            log_error_to_csv(f"Invalid Coinbase order book response for {product}", "COINBASE_ERROR", "fetch_coinbase_data", "ERROR")
             return None
-        
-        # Implement rate limiting between requests
-        time.sleep(0.35)
-        
-        # Get recent trades with error handling
-        trades_response = requests.get(
-            f"{base_url}/products/BTC-USD/trades",
-            headers=headers,
-            timeout=5
-        )
-        if trades_response.status_code == 429:
-            log_error_to_csv("Coinbase rate limit exceeded", "API_RATE_LIMIT", "fetch_coinbase_data", "WARNING")
-            time.sleep(1)
-            trades_response = requests.get(f"{base_url}/products/BTC-USD/trades", headers=headers)
-        trades = trades_response.json()
-        
-        return {
+
+        time.sleep(0.2)  # slight pacing between requests
+        trades_resp = get_with_backoff(f"{base_url}/products/{product}/trades")
+        trades = trades_resp.json() if trades_resp is not None else []
+
+        data = {
             'order_book': order_book,
             'recent_trades': trades,
             'timestamp': datetime.now().timestamp()
         }
+        # Save in cache
+        cache[product] = {'time': now, 'data': data}
+        bot_status['coinbase_cache'] = cache
+        return data
     except Exception as e:
         print(f"Coinbase data fetch error: {e}")
         return None
@@ -846,7 +868,7 @@ def analyze_market_sentiment():
         print("\nAnalyzing market sentiment from order book and trade data...")  # Debug log
         
         # 1. Order Book Analysis
-        cb_data = fetch_coinbase_data()
+        cb_data = fetch_coinbase_data("BTC-USD")
         if cb_data:
             order_book = cb_data['order_book']
             if 'bids' in order_book and 'asks' in order_book:
@@ -890,7 +912,6 @@ def analyze_market_sentiment():
             },
             'confidence': min(1.0, abs(combined_sentiment) * 2)  # Confidence score 0-1
         }
-        
         # Determine sentiment with confidence threshold
         if abs(combined_sentiment) < 0.1:
             return "neutral"
@@ -902,6 +923,22 @@ def analyze_market_sentiment():
     except Exception as e:
         bot_status['errors'].append(f"Market sentiment analysis failed: {e}")
         return "neutral"
+
+def get_exchange_info_cached(ttl_seconds: int = 300):
+    """Return Binance exchange_info using a simple TTL cache to reduce API calls."""
+    if not client:
+        raise RuntimeError("Client not initialized")
+    try:
+        cache = bot_status.get('exchange_info_cache')
+        now = get_cairo_time()
+        if cache and (now - cache['time']).total_seconds() < ttl_seconds:
+            return cache['data']
+        data = client.get_exchange_info()
+        bot_status['exchange_info_cache'] = {'time': now, 'data': data}
+        return data
+    except Exception as e:
+        log_error_to_csv(f"exchange_info cache error: {e}", "CACHE_ERROR", "get_exchange_info_cached", "WARNING")
+        return client.get_exchange_info()
 
 def calculate_rsi(prices, period=None):
     """Calculate RSI using proper Wilder's smoothing method"""
@@ -1448,7 +1485,7 @@ def analyze_trading_pairs():
             return default_result
         
         try:
-            exchange_info = client.get_exchange_info()
+            exchange_info = get_exchange_info_cached()
         except Exception as e:
             log_error_to_csv(str(e), "PAIR_ANALYSIS", "analyze_trading_pairs", "ERROR")
             return default_result
@@ -1730,13 +1767,20 @@ def adaptive_strategy(df, symbol, indicators):
     trend_strength = abs((sma5 - sma20) / sma20)
     is_strong_trend = trend_strength > config.STRICT_STRATEGY['trend_strength']
     
-    # Adjust thresholds based on market conditions
-    if is_high_volatility:
+    # Adjust thresholds based on market conditions and current market regime
+    regime = bot_status.get('market_regime', 'NORMAL')
+    if is_high_volatility or regime in ['VOLATILE', 'EXTREME']:
         rsi_buy = 35  # More conservative in high volatility
         rsi_sell = 65
+        dynamic_threshold = max(25, adaptive_config.get('score_threshold', 30))
+    elif regime == 'QUIET':
+        rsi_buy = 45  # Harder to trigger in quiet markets
+        rsi_sell = 55
+        dynamic_threshold = min(35, adaptive_config.get('score_threshold', 30))
     else:
-        rsi_buy = 40  # More aggressive in low volatility
+        rsi_buy = 40  # Default
         rsi_sell = 60
+        dynamic_threshold = adaptive_config.get('score_threshold', 30)
         
     # Score-based system (0-100) with weights and per-component breakdown
     weights = config.ADAPTIVE_STRATEGY.get('weights', {
@@ -1821,8 +1865,8 @@ def adaptive_strategy(df, symbol, indicators):
         components = {k: v * 1.2 for k, v in components.items()}
     score = sum(components.values())
 
-    # Use configurable score threshold for decisions with concise breakdown
-    score_threshold = adaptive_config['score_threshold']
+    # Use dynamic score threshold for decisions with concise breakdown
+    score_threshold = dynamic_threshold
     breakdown = (
         f"RSI {components['rsi']:+.1f}, "
         f"MACD {components['macd']:+.1f}, "
@@ -1920,7 +1964,7 @@ def check_coin_balance(symbol):
         else:
             # For other quote currencies, try to find the quote asset
             try:
-                exchange_info = client.get_exchange_info()
+                exchange_info = get_exchange_info_cached()
                 symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == symbol), None)
                 if symbol_info:
                     base_asset = symbol_info['baseAsset']
@@ -1947,7 +1991,7 @@ def check_coin_balance(symbol):
         # Get minimum quantity requirements
         min_sellable_qty = 0.001  # Default minimum
         try:
-            exchange_info = client.get_exchange_info()
+            exchange_info = get_exchange_info_cached()
             symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == symbol), None)
             if symbol_info:
                 lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
@@ -2271,7 +2315,7 @@ def execute_trade(signal, symbol="BTCUSDT", qty=None):
     try:
         if client:
             print("Getting exchange info from Binance API...")
-            exchange_info = client.get_exchange_info()
+            exchange_info = get_exchange_info_cached()
             symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == symbol), None)
             if symbol_info:
                 print(f"Symbol info found for {symbol}:")
