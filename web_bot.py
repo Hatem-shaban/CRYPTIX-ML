@@ -666,11 +666,15 @@ def initialize_client():
         api_key = (
             os.getenv("API_KEY") or 
             os.environ.get("API_KEY") or 
+            os.getenv("BINANCE_API_KEY") or
+            os.environ.get("BINANCE_API_KEY") or
             None
         )
         api_secret = (
             os.getenv("API_SECRET") or 
             os.environ.get("API_SECRET") or 
+            os.getenv("BINANCE_API_SECRET") or
+            os.environ.get("BINANCE_API_SECRET") or
             None
         )
         
@@ -696,15 +700,15 @@ def initialize_client():
         env_flag = os.getenv("BINANCE_TESTNET") or os.getenv("USE_TESTNET")
         use_testnet = _truthy(env_flag) if env_flag is not None else getattr(config, 'USE_TESTNET', False)
 
-        # Validate credential format (less strict for testnet)
-        if not use_testnet and len(api_key) != 64:
-            error_msg = f"Invalid API key format - expected 64 characters for LIVE, got {len(api_key)}"
+        # Validate credential format (less strict for testnet); allow variation in lengths on LIVE
+        if not use_testnet and len(api_key) < 32:
+            error_msg = f"Invalid API key format - too short for LIVE (len={len(api_key)})"
             print(f"❌ {error_msg}")
             bot_status['errors'].append(error_msg)
             log_error_to_csv(error_msg, "CREDENTIALS_ERROR", "initialize_client", "ERROR")
             return False
-        if not use_testnet and len(api_secret) != 64:
-            error_msg = f"Invalid API secret format - expected 64 characters for LIVE, got {len(api_secret)}"
+        if not use_testnet and len(api_secret) < 32:
+            error_msg = f"Invalid API secret format - too short for LIVE (len={len(api_secret)})"
             print(f"❌ {error_msg}")
             bot_status['errors'].append(error_msg)
             log_error_to_csv(error_msg, "CREDENTIALS_ERROR", "initialize_client", "ERROR")

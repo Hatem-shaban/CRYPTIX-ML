@@ -158,7 +158,7 @@ API_RATE_LIMITS = {
 # Binance environment (Spot)
 # Set to True when using Binance Spot Testnet (https://testnet.binance.vision)
 # Can be overridden by env vars BINANCE_TESTNET/USE_TESTNET ("1","true","yes")
-USE_TESTNET = True
+USE_TESTNET = False
 
 # Telegram Notification Settings
 TELEGRAM = {
